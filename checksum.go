@@ -106,7 +106,16 @@ func rewriteChecksumsFile(validLines []string) error {
 		return err
 	}
 	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
+	// renamed: the rename has completed; defer must not remove tmpPath (it no longer exists at that path).
+	// destRemoved: checksumsFile has been deleted but the rename hasn't succeeded yet;
+	// defer must NOT remove tmpPath so the data survives on disk as a recovery artifact.
+	renamed := false
+	destRemoved := false
+	defer func() {
+		if !renamed && !destRemoved {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	content := ""
 	if len(validLines) > 0 {
@@ -125,14 +134,18 @@ func rewriteChecksumsFile(validLines []string) error {
 	}
 
 	if err = os.Rename(tmpPath, checksumsFile); err != nil {
-		// Best-effort Windows-friendly fallback.
+		// Best-effort Windows-friendly fallback: remove destination then retry.
 		if removeErr := os.Remove(checksumsFile); removeErr != nil {
 			return err
 		}
+		// Destination is gone. From here on the defer must not delete tmpPath on
+		// failure — it is the only remaining copy of the valid checksum data.
+		destRemoved = true
 		if err = os.Rename(tmpPath, checksumsFile); err != nil {
-			return err
+			return fmt.Errorf("rename failed after removing destination (%s still contains valid data): %w", tmpPath, err)
 		}
 	}
+	renamed = true
 
 	if dirFd, dirErr := os.Open(dir); dirErr == nil {
 		_ = dirFd.Sync()
