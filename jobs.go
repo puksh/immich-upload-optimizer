@@ -139,7 +139,6 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
 	// Send the request to the upstream server
 	resp, err := getHTTPclient().Do(req)
-	defer resp.Body.Close()
 	if err != nil {
 		select {
 		case chErr := <-errChan:
@@ -150,6 +149,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 		}
 		return fmt.Errorf("unable to POST: %w", err)
 	}
+	defer resp.Body.Close()
 	// Send immich response back to client
 	setHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
