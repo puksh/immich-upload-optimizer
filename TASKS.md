@@ -47,3 +47,4 @@ cjxl --lossless_jpeg=1 "/tmp/upload-2612480203.jpg" "/tmp/processing-3398346076/
 - The processing command **must not modify** the original file
 - Long-running tasks (e.g. video transcoding) may exceed HTTP timeouts. Tasks will continue in the background even if the client disconnects. The processed file will still be uploaded to Immich regardless of client disconnection. A WebSocket is also used to notify upload success so this shouldn't really matter (web portal currently ignores those notifications)
 - Only 1 task per upload executes. If multiple tasks have the same extension, the one closer to the top of the config file executes
+- If a `cjxl` task fails because the CPU does not support required instructions (e.g. `illegal instruction` / `SIGILL`), IUO can automatically upload the original file instead of failing when `-jxl_fallback_to_original` / `IUO_JXL_FALLBACK_TO_ORIGINAL` is enabled (default: `true`)

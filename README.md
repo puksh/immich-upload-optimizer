@@ -53,6 +53,7 @@ services:
       - TMPDIR=/tempfs # Writes uploaded files in RAM to improve disk lifespan (Remove if running low on RAM)
       #- IUO_DOWNLOAD_JPG_FROM_JXL=true # Uncomment to enable JXL to JPG conversion
       #- IUO_DOWNLOAD_JPG_FROM_AVIF=true # Uncomment to enable AVIF to JPG conversion
+      #- IUO_JXL_FALLBACK_TO_ORIGINAL=true # Keep uploads working on CPUs where cjxl uses unsupported instructions
     volumes:
       #- /path/to/your/host/dir:/IUO # Keep the checksums and tasks files between updates by defining a volume
     restart: unless-stopped
@@ -82,6 +83,7 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 - `-checksums_file`: Path to the checksums file (default: `checksums.csv`)
 - `-download_jpg_from_jxl`: Converts JXL images to JPG on download for compatibility (default: `false`)
 - `-download_jpg_from_avif`: Converts AVIF images to JPG on download for compatibility (default: `false`)
+- `-jxl_fallback_to_original`: If JXL conversion fails due to unsupported CPU instructions, uploads the original file instead of failing (default: `true`)
 - `-max_image_jobs`: Max number of image jobs running concurrently (default: `5`)
 - `-max_video_jobs`: Max number of video jobs running concurrently (default: `1`)
 
@@ -97,6 +99,15 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 - A lossy JXL option is also available with similar quality/size ratio to AVIF
 
 If neither fits your needs, create your own conversion task: examples in [config](config)
+
+## 🧯 JXL on older/quirky CPUs (Haswell, SIGILL / illegal instruction)
+If `cjxl`/`djxl` crashes with `illegal instruction`, use a custom image that builds `libjxl` for your CPU target.
+
+- `Dockerfile.goreleaser` now supports `LIBJXL_CPU_FLAGS`
+- Default is Haswell-safe: `-O2 -march=haswell -mtune=haswell -mno-avx512f -mno-avx512bw -mno-avx512vl`
+- Keep `IUO_JXL_FALLBACK_TO_ORIGINAL=true` as a safety net (enabled by default)
+
+For very old CPUs, lower the target further (example: `-march=x86-64-v2`).
 
 **To experiment with different quality settings live before modifying the task:** [squoosh.app](https://squoosh.app/), [caesium.app](https://caesium.app/)
 
