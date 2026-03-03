@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 type TaskProcessor struct {
@@ -156,12 +159,40 @@ func (tp *TaskProcessor) Run() error {
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
 	
+	// Set up process group (Unix only) so we can kill all children
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
+	}
+	
 	// Use separate buffers to avoid deadlock on large output
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	
-	err = cmd.Run()
+	// Run command with timeout using a goroutine
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+	
+	timeout := time.After(30 * time.Minute)
+	select {
+	case err = <-done:
+		// Command completed
+	case <-timeout:
+		// Kill the entire process group on timeout
+		if cmd.Process != nil && runtime.GOOS != "windows" {
+			pgid, pgErr := syscall.Getpgid(cmd.Process.Pid)
+			if pgErr == nil {
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			}
+		}
+		tp.logf("task exceeded timeout of 30 minutes, process and all children were killed")
+		return fmt.Errorf("task timeout: process exceeded 30-minute limit while running command:\n%s", cmdLine.String())
+	}
+	
 	output := append(stdout.Bytes(), stderr.Bytes()...)
 	if err != nil {
 		if jxlFallbackToOriginal && isJxlCommand(cmdLine.String()) && isJxlUnsupportedCPUError(err, output) {
