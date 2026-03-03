@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,22 +31,115 @@ func SHA1(file io.ReadSeeker) (string, error) {
 
 var mapLock sync.RWMutex
 var fakeToOriginalChecksum map[string]string
+var checksumFileLock sync.Mutex
+
+func isValidSHA1Base64(s string) bool {
+	if len(s) != 28 {
+		return false
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	return err == nil && len(b) == sha1.Size
+}
 
 func initChecksums() {
-	fakeToOriginalChecksum = make(map[string]string)
+	checksumFileLock.Lock()
+	defer checksumFileLock.Unlock()
+
+	loaded := make(map[string]string)
+	validLines := make([]string, 0)
+	hadCorruption := false
+
 	file, err := os.OpenFile(checksumsFile, os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
+		mapLock.Lock()
+		fakeToOriginalChecksum = loaded
+		mapLock.Unlock()
 		return
 	}
 	defer file.Close()
+
 	scanner := bufio.NewScanner(file)
+	// Default Scanner token limit is 64 KiB. Corrupted tails can exceed this.
+	// Increase limit so we can safely skip malformed oversized lines.
+	scanner.Buffer(make([]byte, 1024), 10*1024*1024)
 	for scanner.Scan() {
-		kv := strings.Split(scanner.Text(), ",")
-		fakeToOriginalChecksum[kv[0]] = kv[1]
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		kv := strings.SplitN(line, ",", 2)
+		if len(kv) != 2 {
+			hadCorruption = true
+			continue
+		}
+		fake := strings.TrimSpace(kv[0])
+		original := strings.TrimSpace(kv[1])
+		if !isValidSHA1Base64(fake) || !isValidSHA1Base64(original) {
+			hadCorruption = true
+			continue
+		}
+		loaded[fake] = original
+		validLines = append(validLines, fake+","+original)
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Println("Error reading csv:", err)
+		hadCorruption = true
 	}
+
+	mapLock.Lock()
+	fakeToOriginalChecksum = loaded
+	mapLock.Unlock()
+
+	if hadCorruption {
+		if err := rewriteChecksumsFile(validLines); err != nil {
+			fmt.Println("Error cleaning corrupted checksums:", err)
+		} else {
+			fmt.Println("Removed corrupted checksum entries from file")
+		}
+	}
+}
+
+func rewriteChecksumsFile(validLines []string) error {
+	dir := filepath.Dir(checksumsFile)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(checksumsFile)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	content := ""
+	if len(validLines) > 0 {
+		content = strings.Join(validLines, "\n") + "\n"
+	}
+	if _, err = io.WriteString(tmpFile, content); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err = tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err = tmpFile.Close(); err != nil {
+		return err
+	}
+
+	if err = os.Rename(tmpPath, checksumsFile); err != nil {
+		// Best-effort Windows-friendly fallback.
+		if removeErr := os.Remove(checksumsFile); removeErr != nil {
+			return err
+		}
+		if err = os.Rename(tmpPath, checksumsFile); err != nil {
+			return err
+		}
+	}
+
+	if dirFd, dirErr := os.Open(dir); dirErr == nil {
+		_ = dirFd.Sync()
+		_ = dirFd.Close()
+	}
+
+	return nil
 }
 
 func addChecksums(fake, original string) {
@@ -58,12 +152,18 @@ func addChecksums(fake, original string) {
 }
 
 func appendToCSV(key, value string) error {
+	checksumFileLock.Lock()
+	defer checksumFileLock.Unlock()
+
 	file, err := os.OpenFile(checksumsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	if _, err := io.WriteString(file, key+","+value+"\n"); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
 		return err
 	}
 	return nil
