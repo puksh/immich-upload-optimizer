@@ -1,6 +1,13 @@
 # Pre-declare so Docker BuildKit auto-populates it from --platform
 ARG TARGETARCH
 
+# Build the Go binary
+FROM golang:1.25-bookworm AS go-builder
+WORKDIR /src
+COPY go.mod ./
+COPY *.go ./
+RUN go mod tidy && CGO_ENABLED=0 go build -o immich-upload-optimizer .
+
 FROM debian:sid-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
@@ -115,5 +122,5 @@ RUN ldconfig
 COPY config /etc/immich-upload-optimizer/config
 ENV IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/lossy_avif.yaml
 
-COPY immich-upload-optimizer /usr/local/bin/
+COPY --from=go-builder /src/immich-upload-optimizer /usr/local/bin/
 CMD ["immich-upload-optimizer"]
