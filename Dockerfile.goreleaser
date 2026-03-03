@@ -1,3 +1,6 @@
+# Pre-declare so Docker BuildKit auto-populates it from --platform
+ARG TARGETARCH
+
 FROM debian:sid-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
@@ -62,15 +65,23 @@ RUN git clone -b ${IMAGE_MAGICK_VERSION} --depth 1 https://github.com/ImageMagic
     ldconfig /usr/local/lib
 
 # Download prebuilt Caesium bin
-ARG TARGETPLATFORM
+# Redeclare to inherit the global ARG value inside this build stage
+ARG TARGETARCH
 RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/Lymphatus/caesium-clt/releases/latest | jq -r '.tag_name') && \
-    if [ "$TARGETPLATFORM" = "linux/amd64" ]; then CAESIUM_ARCH=x86_64-unknown-linux-musl; \
-    elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then CAESIUM_ARCH=aarch64-unknown-linux-musl; \
-    else echo "Platform not supported by Lymphatus/caesium-clt"; exit 126; fi && \
+    # Fall back to uname -m when TARGETARCH is not set (plain docker build without --platform)
+    ARCH="${TARGETARCH:-$(uname -m)}" && \
+    if [ "$ARCH" = "amd64" ] || [ "$ARCH" = "x86_64" ]; then \
+        CAESIUM_ARCH=x86_64-unknown-linux-musl; \
+    elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
+        CAESIUM_ARCH=aarch64-unknown-linux-musl; \
+    else \
+        echo "Unsupported arch: $ARCH"; exit 126; \
+    fi && \
     CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH} && \
-    curl -sS -L -O --output-dir /tmp/ --create-dirs  "https://github.com/Lymphatus/caesium-clt/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz" && \
-    tar xzf "/tmp/${CAESIUM_ARCHIVE}.tar.gz" -C /tmp && \
-    mv "/tmp/${CAESIUM_ARCHIVE}/caesiumclt" /usr/local/bin/caesiumclt
+    curl -sS -L -o /tmp/${CAESIUM_ARCHIVE}.tar.gz \
+    https://github.com/Lymphatus/caesium-clt/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz && \
+    tar xzf /tmp/${CAESIUM_ARCHIVE}.tar.gz -C /tmp && \
+    mv /tmp/${CAESIUM_ARCHIVE}/caesiumclt /usr/local/bin/caesiumclt
 
 FROM debian:sid-slim
 ENV DEBIAN_FRONTEND=noninteractive
