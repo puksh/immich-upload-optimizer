@@ -99,7 +99,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 				}
 				err = multipartWriter.WriteField(key, value)
 				if err != nil {
-					cancel()
+					pipeWriter.CloseWithError(fmt.Errorf("unable to create form data: %w", err))
 					errChan <- fmt.Errorf("unable to create form data: %w", err)
 					return
 				}
@@ -107,25 +107,25 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 		}
 		part, err := multipartWriter.CreateFormFile(filterFormKey, name)
 		if err != nil {
-			cancel()
+			pipeWriter.CloseWithError(fmt.Errorf("unable to create form data: %w", err))
 			errChan <- fmt.Errorf("unable to create form data: %w", err)
 			return
 		}
 		_, err = file.Seek(0, io.SeekStart)
 		if err != nil {
-			cancel()
+			pipeWriter.CloseWithError(fmt.Errorf("unable to seek beginning of file: %w", err))
 			errChan <- fmt.Errorf("unable to seek beginning of file: %w", err)
 			return
 		}
 		_, err = io.Copy(part, file)
 		if err != nil {
-			cancel()
+			pipeWriter.CloseWithError(fmt.Errorf("unable to write file in form field: %w", err))
 			errChan <- fmt.Errorf("unable to write file in form field: %w", err)
 			return
 		}
 		err = multipartWriter.Close()
 		if err != nil {
-			cancel()
+			pipeWriter.CloseWithError(fmt.Errorf("unable to finish form data: %w", err))
 			errChan <- fmt.Errorf("unable to finish form data: %w", err)
 			return
 		}
@@ -133,6 +133,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 	}()
 	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL+r.URL.String(), pipeReader)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("unable to create POST request: %w", err)
 	}
 	req.Header = r.Header
@@ -140,9 +141,10 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 	// Send the request to the upstream server
 	resp, err := getHTTPclient().Do(req)
 	if err != nil {
+		cancel()
 		select {
 		case chErr := <-errChan:
-			if err != nil {
+			if chErr != nil {
 				return fmt.Errorf("error writing data to pipe: %v: %v", err, chErr)
 			}
 		default:
