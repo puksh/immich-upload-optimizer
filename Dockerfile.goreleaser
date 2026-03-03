@@ -1,7 +1,8 @@
 FROM debian:sid-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
-#ARG LIBJXL_VERSION=0.11.1
+ARG LIBJXL_VERSION=0.11.2
+ARG LIBJXL_CPU_FLAGS="-O2 -march=haswell -mtune=haswell -mno-avx512f -mno-avx512bw -mno-avx512vl"
 ARG LIBAVIF_VERSION=1.3.0
 ARG LIBHEIF_VERSION=1.20.2
 ARG IMAGE_MAGICK_VERSION=7.1.2-8
@@ -12,7 +13,6 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     # Build tools
     autoconf automake libtool clang make cmake pkg-config libomp-dev \
     # ImageMagick
-    libjxl-dev \
     libwebp-dev \
     libjpeg-dev \
     libpng-dev \
@@ -27,12 +27,18 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     libyuv-dev
 
 # Build libjxl
-#RUN git clone -b v${LIBJXL_VERSION} https://github.com/libjxl/libjxl.git --depth 1 --recursive --shallow-submodules && \
-#    cd libjxl && mkdir build && cd build && export CC=clang CXX=clang++ && \
-#    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DJPEGXL_FORCE_SYSTEM_BROTLI=ON -DJPEGXL_FORCE_SYSTEM_LCMS2=ON -DJPEGXL_ENABLE_TOOLS=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF .. && \
-#    cmake --build . -- -j$(nproc) && \
-#    cmake --install . && \
-#    ldconfig /usr/local/lib
+RUN git clone -b v${LIBJXL_VERSION} https://github.com/libjxl/libjxl.git --depth 1 --recursive --shallow-submodules && \
+        export CC=clang CXX=clang++ && \
+        cmake -S libjxl -B libjxl/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DJPEGXL_ENABLE_TOOLS=ON \
+            -DJPEGXL_ENABLE_EXAMPLES=OFF \
+            -DCMAKE_C_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" \
+            -DCMAKE_CXX_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" && \
+        cmake --build libjxl/build --config Release --parallel && \
+        cmake --install libjxl/build && \
+        ldconfig /usr/local/lib
 
 # Build libavif (TODO: don't build from sources as soon as a new release includes the orientation fix: https://github.com/AOMediaCodec/libavif/issues/2727)
 RUN git clone -b v${LIBAVIF_VERSION} https://github.com/AOMediaCodec/libavif.git && \
@@ -74,7 +80,6 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     #handbrake-cli \
     ffmpeg \
     # ImageMagick deps
-    libjxl-tools \
     libwebpmux3 \
     libwebpdemux2 \
     libwebp7 \
