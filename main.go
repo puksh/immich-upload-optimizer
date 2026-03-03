@@ -239,16 +239,26 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 		if !bytes.Equal(signature, []byte{0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A}) {
 			return errors.New("bad jxl signature")
 		}
-		if output, err = exec.Command("djxl", blob.Name(), blob.Name()+".jpg").CombinedOutput(); logger.Error(err, "djxl") {
+		cmd := exec.Command("djxl", blob.Name(), blob.Name()+".jpg")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err = cmd.Run(); logger.Error(err, "djxl") {
 			return
 		}
+		output = append(stdout.Bytes(), stderr.Bytes()...)
 	case AVIF:
 		if !bytes.Equal(signature[4:], []byte("ftypavif")) {
 			return errors.New("bad avif signature")
 		}
-		if output, err = exec.Command("avifdec", "-q", "95", blob.Name(), blob.Name()+".jpg").CombinedOutput(); logger.Error(err, "avifdec") {
+		cmd := exec.Command("avifdec", "-q", "95", blob.Name(), blob.Name()+".jpg")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err = cmd.Run(); logger.Error(err, "avifdec") {
 			return
 		}
+		output = append(stdout.Bytes(), stderr.Bytes()...)
 	default:
 		return errors.New("should never happen")
 	}
