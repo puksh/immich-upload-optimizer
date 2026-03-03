@@ -155,7 +155,14 @@ func (tp *TaskProcessor) Run() error {
 	tp.logf("running task: %s: %s", tp.Task.Name, cmdLine.String())
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
-	output, err := cmd.CombinedOutput()
+	
+	// Use separate buffers to avoid deadlock on large output
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	err = cmd.Run()
+	output := append(stdout.Bytes(), stderr.Bytes()...)
 	if err != nil {
 		if jxlFallbackToOriginal && isJxlCommand(cmdLine.String()) && isJxlUnsupportedCPUError(err, output) {
 			tp.logf("JXL command failed due to unsupported CPU instructions, falling back to original file upload: %v | %s", err, strings.TrimSpace(string(output)))
