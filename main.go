@@ -38,6 +38,7 @@ var configFile string
 var checksumsFile string
 var downloadJpgFromJxl bool
 var downloadJpgFromAvif bool
+var jxlFallbackToOriginal bool
 
 var config *Config
 
@@ -49,6 +50,7 @@ func init() {
 	viper.BindEnv("tasks_file")
 	viper.BindEnv("download_jpg_from_jxl")
 	viper.BindEnv("download_jpg_from_avif")
+	viper.BindEnv("jxl_fallback_to_original")
 	viper.BindEnv("max_image_jobs")
 	viper.BindEnv("max_video_jobs")
 
@@ -58,6 +60,7 @@ func init() {
 	viper.SetDefault("checksums_file", "checksums.csv")
 	viper.SetDefault("download_jpg_from_jxl", false)
 	viper.SetDefault("download_jpg_from_avif", false)
+	viper.SetDefault("jxl_fallback_to_original", true)
 	viper.SetDefault("max_image_jobs", 5)
 	viper.SetDefault("max_video_jobs", 1)
 
@@ -68,6 +71,7 @@ func init() {
 	flag.StringVar(&checksumsFile, "checksums_file", viper.GetString("checksums_file"), "Path to the checksums file")
 	flag.BoolVar(&downloadJpgFromJxl, "download_jpg_from_jxl", viper.GetBool("download_jpg_from_jxl"), "Converts JXL images to JPG on download for wider compatibility")
 	flag.BoolVar(&downloadJpgFromAvif, "download_jpg_from_avif", viper.GetBool("download_jpg_from_avif"), "Converts AVIF images to JPG on download for wider compatibility")
+	flag.BoolVar(&jxlFallbackToOriginal, "jxl_fallback_to_original", viper.GetBool("jxl_fallback_to_original"), "If JXL conversion fails due to unsupported CPU instructions, upload the original file instead of failing")
 	flag.UintVar(&maxImageJobs, "max_image_jobs", viper.GetUint("max_image_jobs"), "Max number of image jobs running concurrently")
 	flag.UintVar(&maxVideoJobs, "max_video_jobs", viper.GetUint("max_video_jobs"), "Max number of video jobs running concurrently")
 	flag.Parse()

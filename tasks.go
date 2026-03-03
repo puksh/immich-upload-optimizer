@@ -157,7 +157,14 @@ func (tp *TaskProcessor) Run() error {
 	cmd.Dir = path.Dir(configFile)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if jxlFallbackToOriginal && isJxlCommand(cmdLine.String()) && isJxlUnsupportedCPUError(err, output) {
+			tp.logf("JXL command failed due to unsupported CPU instructions, falling back to original file upload: %v | %s", err, strings.TrimSpace(string(output)))
+			if fallbackErr := tp.writeOriginalToResultFolder(); fallbackErr != nil {
+				return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s\nFallback error:\n%v", err, cmdLine.String(), string(output), fallbackErr)
+			}
+		} else {
 		return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, cmdLine.String(), string(output))
+		}
 	}
 
 	files, err := os.ReadDir(tp.tempWorkDir)
@@ -182,5 +189,48 @@ func (tp *TaskProcessor) Run() error {
 	tp.ProcessedExtension = path.Ext(processedFilePath)
 	tp.ProcessedFilename = strings.TrimSuffix(tp.OriginalFilename, tp.OriginalExtension) + tp.ProcessedExtension
 
+	return nil
+}
+
+
+func isJxlUnsupportedCPUError(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error() + "\n" + string(output))
+	markers := []string{
+		"illegal instruction",
+		"signal: illegal instruction",
+		"sigill",
+		"unsupported cpu",
+		"unsupported instruction",
+	}
+	for _, marker := range markers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isJxlCommand(cmdLine string) bool {
+	cmd := strings.ToLower(cmdLine)
+	return strings.Contains(cmd, "cjxl") || strings.Contains(cmd, "djxl")
+}
+
+func (tp *TaskProcessor) writeOriginalToResultFolder() error {
+	if _, err := tp.OriginalFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("unable to seek original file: %w", err)
+	}
+	b := path.Base(tp.tempOriginalFilePath)
+	dstPath := path.Join(tp.tempWorkDir, b)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("unable to create fallback output file: %w", err)
+	}
+	defer dst.Close()
+	if _, err = io.Copy(dst, tp.OriginalFile); err != nil {
+		return fmt.Errorf("unable to write fallback output file: %w", err)
+	}
 	return nil
 }
