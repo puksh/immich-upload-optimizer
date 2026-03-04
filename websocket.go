@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/gorilla/websocket"
 	"net/http"
 	"strings"
@@ -126,7 +127,13 @@ func upgradeWebSocketRequest(w http.ResponseWriter, r *http.Request, logger *cus
 		return
 	}
 	defer cliConn.Close()
-	if srvConn, _, err = websocket.DefaultDialer.Dial("ws"+upstreamURL[strings.Index(upstreamURL, ":"):]+r.URL.String(), webSocketSafeHeader(r.Header)); logger.Error(err, "dial") {
+	// Build WebSocket URL using parsed upstream `remote` to choose ws/wss correctly
+	scheme := "ws"
+	if remote != nil && remote.Scheme == "https" {
+		scheme = "wss"
+	}
+	dialURL := fmt.Sprintf("%s://%s%s", scheme, remote.Host, r.URL.String())
+	if srvConn, _, err = websocket.DefaultDialer.Dial(dialURL, webSocketSafeHeader(r.Header)); logger.Error(err, "dial") {
 		return
 	}
 	defer srvConn.Close()
