@@ -26,8 +26,8 @@ var date = "unknown"
 var remote *url.URL
 var proxyUrl *url.URL
 
-var maxImageJobs uint
-var maxVideoJobs uint
+var maxImageJobs int
+var maxVideoJobs int
 var imageSemaphore chan struct{}
 var videoSemaphore chan struct{}
 
@@ -72,8 +72,8 @@ func init() {
 	flag.BoolVar(&downloadJpgFromJxl, "download_jpg_from_jxl", viper.GetBool("download_jpg_from_jxl"), "Converts JXL images to JPG on download for wider compatibility")
 	flag.BoolVar(&downloadJpgFromAvif, "download_jpg_from_avif", viper.GetBool("download_jpg_from_avif"), "Converts AVIF images to JPG on download for wider compatibility")
 	flag.BoolVar(&jxlFallbackToOriginal, "jxl_fallback_to_original", viper.GetBool("jxl_fallback_to_original"), "If JXL conversion fails due to unsupported CPU instructions, upload the original file instead of failing")
-	flag.UintVar(&maxImageJobs, "max_image_jobs", viper.GetUint("max_image_jobs"), "Max number of image jobs running concurrently")
-	flag.UintVar(&maxVideoJobs, "max_video_jobs", viper.GetUint("max_video_jobs"), "Max number of video jobs running concurrently")
+	flag.IntVar(&maxImageJobs, "max_image_jobs", viper.GetInt("max_image_jobs"), "Max number of image jobs running concurrently")
+	flag.IntVar(&maxVideoJobs, "max_video_jobs", viper.GetInt("max_video_jobs"), "Max number of video jobs running concurrently")
 	flag.Parse()
 
 	if showVersion {
