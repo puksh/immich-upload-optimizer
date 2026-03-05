@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"text/template"
 
 	"github.com/spf13/viper"
