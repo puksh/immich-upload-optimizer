@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +31,7 @@ func SHA1(file io.ReadSeeker) (string, error) {
 }
 
 var mapLock sync.RWMutex
-var fakeToOriginalChecksum map[string]string
+var fakeToOriginalChecksum map[string]map[string]struct{}
 var checksumFileLock sync.Mutex
 
 func isValidSHA1Base64(s string) bool {
@@ -45,8 +46,8 @@ func initChecksums() {
 	checksumFileLock.Lock()
 	defer checksumFileLock.Unlock()
 
-	loaded := make(map[string]string)
-	validLines := make([]string, 0)
+	loaded := make(map[string]map[string]struct{})
+	validLineSet := make(map[string]struct{})
 	hadCorruption := false
 
 	file, err := os.OpenFile(checksumsFile, os.O_CREATE|os.O_RDONLY, 0644)
@@ -78,8 +79,11 @@ func initChecksums() {
 			hadCorruption = true
 			continue
 		}
-		loaded[fake] = original
-		validLines = append(validLines, fake+","+original)
+		if _, ok := loaded[fake]; !ok {
+			loaded[fake] = make(map[string]struct{})
+		}
+		loaded[fake][original] = struct{}{}
+		validLineSet[fake+","+original] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Println("Error reading csv:", err)
@@ -91,6 +95,11 @@ func initChecksums() {
 	mapLock.Unlock()
 
 	if hadCorruption {
+		validLines := make([]string, 0, len(validLineSet))
+		for line := range validLineSet {
+			validLines = append(validLines, line)
+		}
+		sort.Strings(validLines)
 		if err := rewriteChecksumsFile(validLines); err != nil {
 			fmt.Println("Error cleaning corrupted checksums:", err)
 		} else {
@@ -156,12 +165,39 @@ func rewriteChecksumsFile(validLines []string) error {
 }
 
 func addChecksums(fake, original string) {
+	if !isValidSHA1Base64(fake) || !isValidSHA1Base64(original) {
+		return
+	}
 	go func() {
+		newPair := false
 		mapLock.Lock()
-		fakeToOriginalChecksum[fake] = original
+		if fakeToOriginalChecksum == nil {
+			fakeToOriginalChecksum = make(map[string]map[string]struct{})
+		}
+		if _, ok := fakeToOriginalChecksum[fake]; !ok {
+			fakeToOriginalChecksum[fake] = make(map[string]struct{})
+		}
+		if _, exists := fakeToOriginalChecksum[fake][original]; !exists {
+			fakeToOriginalChecksum[fake][original] = struct{}{}
+			newPair = true
+		}
 		mapLock.Unlock()
-		_ = appendToCSV(fake, original)
+		if newPair {
+			_ = appendToCSV(fake, original)
+		}
 	}()
+}
+
+// toOriginalChecksum: Must acquire mapLock.RLock() before calling
+func toOriginalChecksum(checksum string) (string, bool) {
+	originals, ok := fakeToOriginalChecksum[checksum]
+	if !ok || len(originals) != 1 {
+		return "", false
+	}
+	for original := range originals {
+		return original, true
+	}
+	return "", false
 }
 
 func appendToCSV(key, value string) error {
@@ -198,7 +234,7 @@ func (asset Asset) toOriginalAsset() {
 	}
 	if c, ok := asset["checksum"]; ok {
 		if checksum, ok := c.(string); ok {
-			if original, ok := fakeToOriginalChecksum[checksum]; ok {
+			if original, ok := toOriginalChecksum(checksum); ok {
 				//fmt.Printf("checksum: %s -> %s\n", checksum, original)
 				asset["checksum"] = original
 			}
