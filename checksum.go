@@ -184,6 +184,20 @@ func appendToCSV(key, value string) error {
 
 type Asset map[string]any
 
+func assetDedupKey(asset map[string]any) (string, bool) {
+	checksum, ok := asset["checksum"].(string)
+	if !ok || checksum == "" {
+		return "", false
+	}
+	owner := ""
+	if ownerID, ok := asset["ownerId"].(string); ok {
+		owner = ownerID
+	} else if ownerID, ok := asset["owner_id"].(string); ok {
+		owner = ownerID
+	}
+	return owner + "|" + checksum, true
+}
+
 // toOriginalAsset: Must acquire mapLock.RLock() before calling
 func (asset Asset) toOriginalAsset() {
 	if downloadJpgFromJxl || downloadJpgFromAvif {
@@ -284,7 +298,7 @@ func (replacer Replacer) Replace() (err error) {
 				return
 			}
 			var filteredStreams []any
-			seenChecksums := make(map[string]bool)
+			seenAssets := make(map[string]bool)
 			for _, value := range streams {
 				if v, ok := value.(map[string]any); ok {
 					if t, ok := v["type"].(string); ok && !slices.Contains([]string{"AssetV1", "AlbumAssetCreateV1", "AlbumAssetUpdateV1", "AlbumAssetBackfillV1", "PartnerAssetV1", "PartnerAssetBackfillV1"}, t) {
@@ -295,12 +309,12 @@ func (replacer Replacer) Replace() (err error) {
 						mapLock.RLock()
 						Asset(asset).toOriginalAsset()
 						mapLock.RUnlock()
-						
-						if c, ok := asset["checksum"].(string); ok {
-							if seenChecksums[c] {
+
+						if k, ok := assetDedupKey(asset); ok {
+							if seenAssets[k] {
 								continue
 							}
-							seenChecksums[c] = true
+							seenAssets[k] = true
 						}
 					}
 				}
@@ -328,16 +342,16 @@ func (replacer Replacer) Replace() (err error) {
 				}
 				if assets, ok := value.([]any); ok {
 					var filteredAssets []any
-					seenChecksums := make(map[string]bool)
+					seenAssets := make(map[string]bool)
 					mapLock.RLock()
 					for _, a := range assets {
 						if asset, ok := a.(map[string]any); ok {
 							Asset(asset).toOriginalAsset()
-							if c, ok := asset["checksum"].(string); ok {
-								if seenChecksums[c] {
+							if k, ok := assetDedupKey(asset); ok {
+								if seenAssets[k] {
 									continue
 								}
-								seenChecksums[c] = true
+								seenAssets[k] = true
 							}
 						}
 						filteredAssets = append(filteredAssets, a)
@@ -358,15 +372,15 @@ func (replacer Replacer) Replace() (err error) {
 				return
 			}
 			var filteredAssets []Asset
-			seenChecksums := make(map[string]bool)
+			seenAssets := make(map[string]bool)
 			mapLock.RLock()
 			for _, asset := range assets {
 				asset.toOriginalAsset()
-				if c, ok := asset["checksum"].(string); ok {
-					if seenChecksums[c] {
+				if k, ok := assetDedupKey(asset); ok {
+					if seenAssets[k] {
 						continue
 					}
-					seenChecksums[c] = true
+					seenAssets[k] = true
 				}
 				filteredAssets = append(filteredAssets, asset)
 			}
