@@ -283,19 +283,30 @@ func (replacer Replacer) Replace() (err error) {
 			if err = json.Unmarshal(fixedJsonBuf, &streams); logger.Error(err, "json unmarshal") {
 				return
 			}
+			var filteredStreams []any
+			seenChecksums := make(map[string]bool)
 			for _, value := range streams {
 				if v, ok := value.(map[string]any); ok {
 					if t, ok := v["type"].(string); ok && !slices.Contains([]string{"AssetV1", "AlbumAssetCreateV1", "AlbumAssetUpdateV1", "AlbumAssetBackfillV1", "PartnerAssetV1", "PartnerAssetBackfillV1"}, t) {
+						filteredStreams = append(filteredStreams, value)
 						continue
 					}
 					if asset, ok := v["data"].(map[string]any); ok {
 						mapLock.RLock()
 						Asset(asset).toOriginalAsset()
 						mapLock.RUnlock()
+						
+						if c, ok := asset["checksum"].(string); ok {
+							if seenChecksums[c] {
+								continue
+							}
+							seenChecksums[c] = true
+						}
 					}
 				}
+				filteredStreams = append(filteredStreams, value)
 			}
-			if jsonBuf, err = json.Marshal(streams); logger.Error(err, "json marshal") {
+			if jsonBuf, err = json.Marshal(filteredStreams); logger.Error(err, "json marshal") {
 				return
 			}
 			if len(jsonBuf) > 0 {
@@ -316,13 +327,23 @@ func (replacer Replacer) Replace() (err error) {
 					continue
 				}
 				if assets, ok := value.([]any); ok {
+					var filteredAssets []any
+					seenChecksums := make(map[string]bool)
 					mapLock.RLock()
 					for _, a := range assets {
 						if asset, ok := a.(map[string]any); ok {
 							Asset(asset).toOriginalAsset()
+							if c, ok := asset["checksum"].(string); ok {
+								if seenChecksums[c] {
+									continue
+								}
+								seenChecksums[c] = true
+							}
 						}
+						filteredAssets = append(filteredAssets, a)
 					}
 					mapLock.RUnlock()
+					assetsMap[key] = filteredAssets
 				}
 				break
 			}
@@ -336,12 +357,21 @@ func (replacer Replacer) Replace() (err error) {
 			if err = json.Unmarshal(jsonBuf, &assets); logger.Error(err, "json unmarshal") {
 				return
 			}
+			var filteredAssets []Asset
+			seenChecksums := make(map[string]bool)
 			mapLock.RLock()
 			for _, asset := range assets {
 				asset.toOriginalAsset()
+				if c, ok := asset["checksum"].(string); ok {
+					if seenChecksums[c] {
+						continue
+					}
+					seenChecksums[c] = true
+				}
+				filteredAssets = append(filteredAssets, asset)
 			}
 			mapLock.RUnlock()
-			if jsonBuf, err = json.Marshal(assets); logger.Error(err, "json marshal") {
+			if jsonBuf, err = json.Marshal(filteredAssets); logger.Error(err, "json marshal") {
 				return
 			}
 		case TypeAssetView:
