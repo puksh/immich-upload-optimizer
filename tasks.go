@@ -9,10 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -158,13 +156,7 @@ func (tp *TaskProcessor) Run() error {
 	tp.logf("running task: %s: %s", tp.Task.Name, cmdLine.String())
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
-	
-	// Set up process group (Unix only) so we can kill all children
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setpgid: true,
-		}
-	}
+	setTaskProcessGroup(cmd)
 	
 	// Use separate buffers to avoid deadlock on large output
 	var stdout, stderr bytes.Buffer
@@ -182,13 +174,7 @@ func (tp *TaskProcessor) Run() error {
 	case err = <-done:
 		// Command completed
 	case <-timeout:
-		// Kill the entire process group on timeout
-		if cmd.Process != nil && runtime.GOOS != "windows" {
-			pgid, pgErr := syscall.Getpgid(cmd.Process.Pid)
-			if pgErr == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			}
-		}
+		killTaskProcessTree(cmd)
 		tp.logf("task exceeded timeout of 30 minutes, process and all children were killed")
 		return fmt.Errorf("task timeout: process exceeded 30-minute limit while running command:\n%s", cmdLine.String())
 	}

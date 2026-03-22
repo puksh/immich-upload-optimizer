@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -11,7 +12,50 @@ import (
 )
 
 var jobIdCounter atomic.Int64
-var jobs sync.Map // map[string]int
+var jobs sync.Map // map[string]*inFlightJob
+
+type uploadHTTPResult struct {
+	statusCode int
+	headers    http.Header
+	body       []byte
+	err        error
+}
+
+type inFlightJob struct {
+	id     int64
+	done   chan struct{}
+	result uploadHTTPResult
+}
+
+func internalErrorResult(message string, err error) uploadHTTPResult {
+	if err == nil {
+		err = errors.New(message)
+	}
+	return uploadHTTPResult{
+		statusCode: http.StatusInternalServerError,
+		headers:    http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		body:       []byte(message + "\n"),
+		err:        err,
+	}
+}
+
+func writeHTTPResult(w http.ResponseWriter, result uploadHTTPResult) error {
+	if result.statusCode == 0 {
+		result.statusCode = http.StatusInternalServerError
+	}
+	if result.headers != nil {
+		setHeaders(w.Header(), result.headers)
+	}
+	w.WriteHeader(result.statusCode)
+	if len(result.body) == 0 {
+		return nil
+	}
+	_, err := w.Write(result.body)
+	if err != nil {
+		return fmt.Errorf("unable to write response body: %w", err)
+	}
+	return nil
+}
 
 func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error {
 	jobID := jobIdCounter.Add(1)
@@ -26,12 +70,30 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 
 	jobKey := fmt.Sprintf("\"%s\" (%s)", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
 	jobLogger.Printf("download original: %s", jobKey)
-	if id, exists := jobs.Load(jobKey); exists {
-		http.Error(w, "IUO is already processing this file. The app is re-uploading it because it's taking too long. No workaround is possible, just kill the app and wait", http.StatusInternalServerError)
-		return fmt.Errorf("a job processing this file already exists with ID: %d", id)
+
+	currentJob := &inFlightJob{id: jobID, done: make(chan struct{})}
+	actualJob, loaded := jobs.LoadOrStore(jobKey, currentJob)
+	if loaded {
+		existingJob := actualJob.(*inFlightJob)
+		jobLogger.Printf("duplicate upload detected for %s, waiting for in-flight job %d", jobKey, existingJob.id)
+		<-existingJob.done
+		if err = writeHTTPResult(w, existingJob.result); err != nil {
+			return fmt.Errorf("failed to replay response from in-flight job %d: %w", existingJob.id, err)
+		}
+		if existingJob.result.err != nil {
+			return fmt.Errorf("in-flight job %d failed: %w", existingJob.id, existingJob.result.err)
+		}
+		return nil
 	}
-	jobs.Store(jobKey, jobID)
 	defer jobs.Delete(jobKey)
+
+	finalized := false
+	defer func() {
+		if !finalized {
+			currentJob.result = internalErrorResult("failed to process file, view IUO logs for more info", errors.New("job did not finalize response"))
+			close(currentJob.done)
+		}
+	}()
 
 	var originalHash string
 	var newHash string
@@ -47,7 +109,14 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		_ = formFile.Close()
 		_ = r.MultipartForm.RemoveAll()
 		if err = taskProcessor.Run(); err != nil {
-			return fmt.Errorf("failed to process file in job %d: %v", jobID, err.Error())
+			result := internalErrorResult("failed to process file, view IUO logs for more info", fmt.Errorf("failed to process file in job %d: %w", jobID, err))
+			currentJob.result = result
+			close(currentJob.done)
+			finalized = true
+			if writeErr := writeHTTPResult(w, result); writeErr != nil {
+				return fmt.Errorf("failed to write processing error response: %w", writeErr)
+			}
+			return result.err
 		}
 		if taskProcessor.OriginalSize <= taskProcessor.ProcessedSize {
 			uploadFile = taskProcessor.OriginalFile
@@ -63,10 +132,18 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 		}
 	}
 	// Upload the original file or processed one if a task was found
-	err = uploadUpstream(w, r, uploadFile, uploadFilename)
-	if err != nil {
-		jobLogger.Printf("upload upstream error: %s", err.Error())
-		http.Error(w, "failed to process file, view IUO logs for more info", http.StatusInternalServerError)
+	result := uploadUpstream(r, uploadFile, uploadFilename)
+	currentJob.result = result
+	close(currentJob.done)
+	finalized = true
+
+	if err = writeHTTPResult(w, result); err != nil {
+		return fmt.Errorf("failed to write upstream response: %w", err)
+	}
+
+	if result.err != nil {
+		jobLogger.Printf("upload upstream error: %s", result.err.Error())
+		return result.err
 	}
 	if uploadOriginal {
 		jobLogger.Printf("uploaded original: \"%s\" (%s)", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
@@ -81,11 +158,10 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	return nil
 }
 
-func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, name string) (err error) {
+func uploadUpstream(r *http.Request, file io.ReadSeeker, name string) uploadHTTPResult {
 	pipeReader, pipeWriter := io.Pipe()
 	multipartWriter := multipart.NewWriter(pipeWriter)
 	errChan := make(chan error, 1)
-	defer close(errChan)
 	// Prepare chunked request, this saves A LOT of RAM compared to building the whole buffer in RAM.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -97,10 +173,9 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 				if key == "filename" {
 					value = name
 				}
-				err = multipartWriter.WriteField(key, value)
-				if err != nil {
-					pipeWriter.CloseWithError(fmt.Errorf("unable to create form data: %w", err))
-					errChan <- fmt.Errorf("unable to create form data: %w", err)
+				if writeErr := multipartWriter.WriteField(key, value); writeErr != nil {
+					pipeWriter.CloseWithError(fmt.Errorf("unable to create form data: %w", writeErr))
+					errChan <- fmt.Errorf("unable to create form data: %w", writeErr)
 					return
 				}
 			}
@@ -111,22 +186,19 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 			errChan <- fmt.Errorf("unable to create form data: %w", err)
 			return
 		}
-		_, err = file.Seek(0, io.SeekStart)
-		if err != nil {
-			pipeWriter.CloseWithError(fmt.Errorf("unable to seek beginning of file: %w", err))
-			errChan <- fmt.Errorf("unable to seek beginning of file: %w", err)
+		if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+			pipeWriter.CloseWithError(fmt.Errorf("unable to seek beginning of file: %w", seekErr))
+			errChan <- fmt.Errorf("unable to seek beginning of file: %w", seekErr)
 			return
 		}
-		_, err = io.Copy(part, file)
-		if err != nil {
-			pipeWriter.CloseWithError(fmt.Errorf("unable to write file in form field: %w", err))
-			errChan <- fmt.Errorf("unable to write file in form field: %w", err)
+		if _, copyErr := io.Copy(part, file); copyErr != nil {
+			pipeWriter.CloseWithError(fmt.Errorf("unable to write file in form field: %w", copyErr))
+			errChan <- fmt.Errorf("unable to write file in form field: %w", copyErr)
 			return
 		}
-		err = multipartWriter.Close()
-		if err != nil {
-			pipeWriter.CloseWithError(fmt.Errorf("unable to finish form data: %w", err))
-			errChan <- fmt.Errorf("unable to finish form data: %w", err)
+		if closeErr := multipartWriter.Close(); closeErr != nil {
+			pipeWriter.CloseWithError(fmt.Errorf("unable to finish form data: %w", closeErr))
+			errChan <- fmt.Errorf("unable to finish form data: %w", closeErr)
 			return
 		}
 		errChan <- nil
@@ -134,7 +206,7 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL+r.URL.String(), pipeReader)
 	if err != nil {
 		cancel()
-		return fmt.Errorf("unable to create POST request: %w", err)
+		return internalErrorResult("failed to process file, view IUO logs for more info", fmt.Errorf("unable to create POST request: %w", err))
 	}
 	req.Header = r.Header
 	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
@@ -145,20 +217,24 @@ func uploadUpstream(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, 
 		select {
 		case chErr := <-errChan:
 			if chErr != nil {
-				return fmt.Errorf("error writing data to pipe: %v: %v", err, chErr)
+				return internalErrorResult("failed to process file, view IUO logs for more info", fmt.Errorf("error writing data to pipe: %v: %v", err, chErr))
 			}
 		default:
 		}
-		return fmt.Errorf("unable to POST: %w", err)
+		return internalErrorResult("failed to process file, view IUO logs for more info", fmt.Errorf("unable to POST: %w", err))
 	}
 	defer resp.Body.Close()
-	// Send immich response back to client
-	setHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("unable to forward response to client: %v", err)
+		return internalErrorResult("failed to process file, view IUO logs for more info", fmt.Errorf("unable to read upstream response body: %w", err))
+	}
+	return uploadHTTPResult{
+		statusCode: resp.StatusCode,
+		headers:    resp.Header.Clone(),
+		body:       body,
+		err:        nil,
 	}
 
-	return nil
+	// Unreachable, kept for readability in previous code paths.
+	// return uploadHTTPResult{}
 }
