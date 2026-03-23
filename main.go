@@ -42,6 +42,7 @@ var checksumsFile string
 var downloadJpgFromJxl bool
 var downloadJpgFromAvif bool
 var jxlFallbackToOriginal bool
+var devMITMproxy bool
 
 var config *Config
 
@@ -57,6 +58,7 @@ func init() {
 	viper.BindEnv("max_image_jobs")
 	viper.BindEnv("max_video_jobs")
 	viper.BindEnv("task_timeout_minutes")
+	viper.BindEnv("dev_mitm_proxy")
 
 	viper.SetDefault("upstream", "")
 	viper.SetDefault("listen", ":2284")
@@ -68,6 +70,7 @@ func init() {
 	viper.SetDefault("max_image_jobs", 5)
 	viper.SetDefault("max_video_jobs", 1)
 	viper.SetDefault("task_timeout_minutes", 120)
+	viper.SetDefault("dev_mitm_proxy", false)
 
 	flag.BoolVar(&showVersion, "version", false, "Show the current version")
 	flag.StringVar(&upstreamURL, "upstream", viper.GetString("upstream"), "Upstream URL. Example: http://immich-server:2283")
@@ -80,6 +83,7 @@ func init() {
 	flag.IntVar(&maxImageJobs, "max_image_jobs", viper.GetInt("max_image_jobs"), "Max number of image jobs running concurrently")
 	flag.IntVar(&maxVideoJobs, "max_video_jobs", viper.GetInt("max_video_jobs"), "Max number of video jobs running concurrently")
 	flag.IntVar(&taskTimeoutMinutes, "task_timeout_minutes", viper.GetInt("task_timeout_minutes"), "Timeout in minutes for each processing task before killing it")
+	flag.BoolVar(&devMITMproxy, "dev_mitm_proxy", viper.GetBool("dev_mitm_proxy"), "Route upstream HTTP traffic through local MITM proxy at http://localhost:8080 (development only)")
 	flag.Parse()
 
 	if showVersion {
@@ -92,6 +96,7 @@ func init() {
 		log.Fatal("task_timeout_minutes must be greater than 0")
 	}
 	taskTimeout = time.Duration(taskTimeoutMinutes) * time.Minute
+	DevMITMproxy = devMITMproxy
 
 	proxyUrl, _ = url.Parse("http://localhost:8080")
 	imageSemaphore = make(chan struct{}, maxImageJobs)
@@ -102,8 +107,8 @@ func init() {
 var baseLogger *log.Logger
 var proxy *httputil.ReverseProxy
 
-// DevMITMproxy Used for development, version gets automatically replaced by goreleaser, making this false
-var DevMITMproxy = version == "dev"
+// DevMITMproxy can be enabled explicitly with -dev_mitm_proxy / IUO_DEV_MITM_PROXY.
+var DevMITMproxy bool
 
 func main() {
 	baseLogger = log.New(os.Stdout, "", log.Ldate|log.Ltime)

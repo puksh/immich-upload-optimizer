@@ -60,6 +60,7 @@ services:
       #- IUO_DOWNLOAD_JPG_FROM_JXL=true # Uncomment to enable JXL to JPG conversion
       #- IUO_DOWNLOAD_JPG_FROM_AVIF=true # Uncomment to enable AVIF to JPG conversion
       #- IUO_JXL_FALLBACK_TO_ORIGINAL=true # Keep uploads working on CPUs where cjxl uses unsupported instructions
+      #- IUO_DEV_MITM_PROXY=true # Development only: routes upstream HTTP traffic through http://localhost:8080
     volumes:
       #- /path/to/your/host/dir:/IUO # Keep the checksums and tasks files between updates by defining a volume
     restart: unless-stopped
@@ -98,6 +99,7 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 - `-max_image_jobs`: Max number of image jobs running concurrently (default: `5`)
 - `-max_video_jobs`: Max number of video jobs running concurrently (default: `1`)
 - `-task_timeout_minutes`: Timeout in minutes for each processing task before killing it (default: `120`)
+- `-dev_mitm_proxy`: Development only. Routes upstream HTTP traffic through `http://localhost:8080` (default: `false`)
 
 ## 📸 Images
 
