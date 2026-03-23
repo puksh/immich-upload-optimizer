@@ -34,6 +34,8 @@ var mapLock sync.RWMutex
 var fakeToOriginalChecksum map[string]map[string]struct{}
 var checksumFileLock sync.Mutex
 
+const defaultChecksumFilePerm os.FileMode = 0644
+
 func isValidSHA1Base64(s string) bool {
 	if len(s) != 28 {
 		return false
@@ -49,6 +51,8 @@ func initChecksums() {
 	loaded := make(map[string]map[string]struct{})
 	validLineSet := make(map[string]struct{})
 	hadCorruption := false
+	hadDuplicateLines := false
+	hadAmbiguousMappings := false
 
 	file, err := os.OpenFile(checksumsFile, os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
@@ -79,22 +83,43 @@ func initChecksums() {
 			hadCorruption = true
 			continue
 		}
+		canonicalLine := fake + "," + original
+		if _, exists := validLineSet[canonicalLine]; exists {
+			hadDuplicateLines = true
+			continue
+		}
 		if _, ok := loaded[fake]; !ok {
 			loaded[fake] = make(map[string]struct{})
 		}
 		loaded[fake][original] = struct{}{}
-		validLineSet[fake+","+original] = struct{}{}
+		validLineSet[canonicalLine] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Println("Error reading csv:", err)
 		hadCorruption = true
 	}
 
+	ambiguousMappings := 0
+	for fake, originals := range loaded {
+		if len(originals) <= 1 {
+			continue
+		}
+		ambiguousMappings++
+		hadAmbiguousMappings = true
+		for original := range originals {
+			delete(validLineSet, fake+","+original)
+		}
+		delete(loaded, fake)
+	}
+	if ambiguousMappings > 0 {
+		fmt.Printf("Warning: removed %d ambiguous processed checksum mapping(s) (same processed checksum linked to multiple originals)\n", ambiguousMappings)
+	}
+
 	mapLock.Lock()
 	fakeToOriginalChecksum = loaded
 	mapLock.Unlock()
 
-	if hadCorruption {
+	if hadCorruption || hadDuplicateLines || hadAmbiguousMappings {
 		validLines := make([]string, 0, len(validLineSet))
 		for line := range validLineSet {
 			validLines = append(validLines, line)
@@ -103,13 +128,32 @@ func initChecksums() {
 		if err := rewriteChecksumsFile(validLines); err != nil {
 			fmt.Println("Error cleaning corrupted checksums:", err)
 		} else {
-			fmt.Println("Removed corrupted checksum entries from file")
+			switch {
+			case hadCorruption && hadDuplicateLines && hadAmbiguousMappings:
+				fmt.Println("Removed corrupted, duplicate, and ambiguous checksum entries from file")
+			case hadCorruption && hadDuplicateLines:
+				fmt.Println("Removed corrupted and duplicate checksum entries from file")
+			case hadCorruption && hadAmbiguousMappings:
+				fmt.Println("Removed corrupted and ambiguous checksum entries from file")
+			case hadDuplicateLines && hadAmbiguousMappings:
+				fmt.Println("Removed duplicate and ambiguous checksum entries from file")
+			case hadCorruption:
+				fmt.Println("Removed corrupted checksum entries from file")
+			case hadDuplicateLines:
+				fmt.Println("Removed duplicate checksum entries from file")
+			case hadAmbiguousMappings:
+				fmt.Println("Removed ambiguous checksum entries from file")
+			}
 		}
 	}
 }
 
 func rewriteChecksumsFile(validLines []string) error {
 	dir := filepath.Dir(checksumsFile)
+	checksumFilePerm := defaultChecksumFilePerm
+	if stat, statErr := os.Stat(checksumsFile); statErr == nil {
+		checksumFilePerm = stat.Mode().Perm()
+	}
 	tmpFile, err := os.CreateTemp(dir, filepath.Base(checksumsFile)+".tmp-*")
 	if err != nil {
 		return err
@@ -134,6 +178,10 @@ func rewriteChecksumsFile(validLines []string) error {
 		_ = tmpFile.Close()
 		return err
 	}
+	if err = tmpFile.Chmod(checksumFilePerm); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
 	if err = tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()
 		return err
@@ -155,6 +203,9 @@ func rewriteChecksumsFile(validLines []string) error {
 		}
 	}
 	renamed = true
+	if chmodErr := os.Chmod(checksumsFile, checksumFilePerm); chmodErr != nil {
+		return fmt.Errorf("unable to restore checksum file permissions: %w", chmodErr)
+	}
 
 	if dirFd, dirErr := os.Open(dir); dirErr == nil {
 		_ = dirFd.Sync()
@@ -209,6 +260,9 @@ func appendToCSV(key, value string) error {
 		return err
 	}
 	defer file.Close()
+	if chmodErr := file.Chmod(defaultChecksumFilePerm); chmodErr != nil {
+		return chmodErr
+	}
 	if _, err := io.WriteString(file, key+","+value+"\n"); err != nil {
 		return err
 	}

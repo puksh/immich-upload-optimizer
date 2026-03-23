@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -57,6 +59,21 @@ func writeHTTPResult(w http.ResponseWriter, result uploadHTTPResult) error {
 	return nil
 }
 
+func buildUploadDedupeKey(file multipart.File, header *multipart.FileHeader) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("unable to seek beginning of upload for dedupe key: %w", err)
+	}
+	hasher := sha1.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", fmt.Errorf("unable to hash upload for dedupe key: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("unable to reset upload after dedupe key hashing: %w", err)
+	}
+	hash := base64.StdEncoding.EncodeToString(hasher.Sum(nil))
+	return fmt.Sprintf("%s,%d", hash, header.Size), nil
+}
+
 func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error {
 	jobID := jobIdCounter.Add(1)
 	jobLogger := newCustomLogger(logger, fmt.Sprintf("job %d: ", jobID))
@@ -68,14 +85,19 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	defer r.MultipartForm.RemoveAll()
 	defer formFile.Close()
 
-	jobKey := fmt.Sprintf("\"%s\" (%s)", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
-	jobLogger.Printf("download original: %s", jobKey)
+	jobDisplayName := fmt.Sprintf("\"%s\" (%s)", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
+	jobLogger.Printf("download original: %s", jobDisplayName)
+
+	jobKey, err := buildUploadDedupeKey(formFile, formFileHeader)
+	if err != nil {
+		return fmt.Errorf("unable to build dedupe key: %w", err)
+	}
 
 	currentJob := &inFlightJob{id: jobID, done: make(chan struct{})}
 	actualJob, loaded := jobs.LoadOrStore(jobKey, currentJob)
 	if loaded {
 		existingJob := actualJob.(*inFlightJob)
-		jobLogger.Printf("duplicate upload detected for %s, waiting for in-flight job %d", jobKey, existingJob.id)
+		jobLogger.Printf("duplicate upload detected for %s, waiting for in-flight job %d", jobDisplayName, existingJob.id)
 		<-existingJob.done
 		if err = writeHTTPResult(w, existingJob.result); err != nil {
 			return fmt.Errorf("failed to replay response from in-flight job %d: %w", existingJob.id, err)
