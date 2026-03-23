@@ -120,6 +120,10 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	actualJob, loaded := jobs.LoadOrStore(jobKey, currentJob)
 	if loaded {
 		existingJob := actualJob.(*inFlightJob)
+		// This upload is a duplicate of an in-flight job. Free temp multipart
+		// files immediately before waiting, otherwise retries can fill TMPDIR.
+		_ = formFile.Close()
+		_ = r.MultipartForm.RemoveAll()
 		jobLogger.Printf("duplicate upload detected for %s, waiting for in-flight job %d", jobDisplayName, existingJob.id)
 		<-existingJob.done
 		if err = writeHTTPResult(w, existingJob.result); err != nil {
