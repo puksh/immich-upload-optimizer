@@ -168,9 +168,9 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	default:
 		if replacer := getChecksumReplacer(w, r, logger); replacer != nil {
 			logger.SetErrPrefix(fmt.Sprintf("replacer %d", replacer.typeId))
-			if err = replacer.Replace(); err == nil {
-				return
-			}
+			err = replacer.Replace()
+			logger.Error(err, "")
+			return
 		}
 	}
 	r.Host = remote.Host
