@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -28,6 +29,8 @@ var proxyUrl *url.URL
 
 var maxImageJobs int
 var maxVideoJobs int
+var taskTimeoutMinutes int
+var taskTimeout time.Duration
 var imageSemaphore chan struct{}
 var videoSemaphore chan struct{}
 
@@ -53,6 +56,7 @@ func init() {
 	viper.BindEnv("jxl_fallback_to_original")
 	viper.BindEnv("max_image_jobs")
 	viper.BindEnv("max_video_jobs")
+	viper.BindEnv("task_timeout_minutes")
 
 	viper.SetDefault("upstream", "")
 	viper.SetDefault("listen", ":2284")
@@ -63,6 +67,7 @@ func init() {
 	viper.SetDefault("jxl_fallback_to_original", true)
 	viper.SetDefault("max_image_jobs", 5)
 	viper.SetDefault("max_video_jobs", 1)
+	viper.SetDefault("task_timeout_minutes", 120)
 
 	flag.BoolVar(&showVersion, "version", false, "Show the current version")
 	flag.StringVar(&upstreamURL, "upstream", viper.GetString("upstream"), "Upstream URL. Example: http://immich-server:2283")
@@ -74,6 +79,7 @@ func init() {
 	flag.BoolVar(&jxlFallbackToOriginal, "jxl_fallback_to_original", viper.GetBool("jxl_fallback_to_original"), "If JXL conversion fails due to unsupported CPU instructions, upload the original file instead of failing")
 	flag.IntVar(&maxImageJobs, "max_image_jobs", viper.GetInt("max_image_jobs"), "Max number of image jobs running concurrently")
 	flag.IntVar(&maxVideoJobs, "max_video_jobs", viper.GetInt("max_video_jobs"), "Max number of video jobs running concurrently")
+	flag.IntVar(&taskTimeoutMinutes, "task_timeout_minutes", viper.GetInt("task_timeout_minutes"), "Timeout in minutes for each processing task before killing it")
 	flag.Parse()
 
 	if showVersion {
@@ -82,6 +88,10 @@ func init() {
 	}
 
 	validateInput()
+	if taskTimeoutMinutes <= 0 {
+		log.Fatal("task_timeout_minutes must be greater than 0")
+	}
+	taskTimeout = time.Duration(taskTimeoutMinutes) * time.Minute
 
 	proxyUrl, _ = url.Parse("http://localhost:8080")
 	imageSemaphore = make(chan struct{}, maxImageJobs)

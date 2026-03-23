@@ -169,14 +169,14 @@ func (tp *TaskProcessor) Run() error {
 		done <- cmd.Run()
 	}()
 	
-	timeout := time.After(30 * time.Minute)
+	timeout := time.After(taskTimeout)
 	select {
 	case err = <-done:
 		// Command completed
 	case <-timeout:
 		killTaskProcessTree(cmd)
-		tp.logf("task exceeded timeout of 30 minutes, process and all children were killed")
-		return fmt.Errorf("task timeout: process exceeded 30-minute limit while running command:\n%s", cmdLine.String())
+		tp.logf("task exceeded timeout of %s, process and all children were killed", taskTimeout)
+		return fmt.Errorf("task timeout: process exceeded %s limit while running command:\n%s", taskTimeout, cmdLine.String())
 	}
 	
 	output := append(stdout.Bytes(), stderr.Bytes()...)

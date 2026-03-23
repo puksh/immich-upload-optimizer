@@ -1,7 +1,9 @@
 # Immich Upload Optimizer [![goreleaser](https://github.com/joojoooo/immich-upload-optimizer/actions/workflows/release.yaml/badge.svg)](https://github.com/joojoooo/immich-upload-optimizer/actions/workflows/release.yaml)
+
 Immich Upload Optimizer (IOU) is a proxy designed to be placed in front of the [Immich](https://immich.app/) server. It intercepts file uploads and uses external CLI programs (by default: [AVIF](https://aomediacodec.github.io/av1-avif/), [JPEG-XL](https://jpegxl.info/), [FFmpeg](https://www.ffmpeg.org/)) to optimize, resize, or compress images and videos to save storage space
 
-## ☕  Support the project
+## ☕ Support the project
+
 Love this project? You can [support it on Ko-fi](https://ko-fi.com/joojooo) Every contribution makes a difference!
 
 [![ko-fi](https://www.ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/joojooo)
@@ -9,9 +11,11 @@ Love this project? You can [support it on Ko-fi](https://ko-fi.com/joojooo) Ever
 A special thanks to @kevinfiol and @timaschew . Your donations are what keep this project alive 💖
 
 ## 🎯 About
+
 This fork was created because the original author [doesn't welcome contributions](https://github.com/miguelangel-nubla/immich-upload-optimizer/pull/21) and [censors comments](https://github.com/miguelangel-nubla/immich-upload-optimizer/issues/15) instead of discussing. Here I can add features without having to convince or ask anyone for permission.
 
 ## ✨ Features
+
 Features that differentiate this fork from the original project:
 
 - **Longer disk lifespan**
@@ -35,6 +39,7 @@ Features that differentiate this fork from the original project:
   - Latest AVIF/HEIF/JXL/ImageMagick versions compiled from sources with full image format conversion support
 
 ## 🐋 Usage via Docker compose
+
 Edit your Immich Docker Compose file:
 
 ```yaml
@@ -44,11 +49,12 @@ services:
     tmpfs:
       - /tempfs
     ports:
-      - "2284:2284"
+      - '2284:2284'
     environment:
       - IUO_UPSTREAM=http://immich-server:2283
       - IUO_LISTEN=:2284
       - IUO_TASKS_FILE=/etc/immich-upload-optimizer/config/lossy_avif.yaml
+      #- IUO_TASK_TIMEOUT_MINUTES=120 # Timeout in minutes for each processing task before killing it
       #- IUO_CHECKSUMS_FILE=/IUO/checksums.csv # Uncomment after defining a volume
       - TMPDIR=/tempfs # Writes uploaded files in RAM to improve disk lifespan (Remove if running low on RAM)
       #- IUO_DOWNLOAD_JPG_FROM_JXL=true # Uncomment to enable JXL to JPG conversion
@@ -64,7 +70,9 @@ services:
   # ...existing configuration...
   # remove the ports section if you only want to access immich through the proxy.
 ```
+
 Run the appropriate commands at the `docker-compose.yml` location to stop, update and start the container:
+
 ```sh
 # Stop container and edit docker-compose.yml
 docker compose down
@@ -73,10 +81,13 @@ docker compose pull
 # Start container
 docker compose up -d
 ```
+
 Configure your **[tasks configuration file](TASKS.md)**
 
 ## 🚩 Flags
+
 All flags are also available as environment variables using the prefix `IUO_` followed by the uppercase flag.
+
 - `-upstream`: The URL of the Immich server (default: `http://immich-server:2283`)
 - `-listen`: The address on which the proxy will listen (default: `:2284`)
 - `-tasks_file`: Path to the [configuration file](TASKS.md) (default: [`lossy_avif.yaml`](config/lossy_avif.yaml))
@@ -86,14 +97,18 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 - `-jxl_fallback_to_original`: If JXL conversion fails due to unsupported CPU instructions, uploads the original file instead of failing (default: `true`)
 - `-max_image_jobs`: Max number of image jobs running concurrently (default: `5`)
 - `-max_video_jobs`: Max number of video jobs running concurrently (default: `1`)
+- `-task_timeout_minutes`: Timeout in minutes for each processing task before killing it (default: `120`)
 
 ## 📸 Images
+
 **[AVIF](https://aomediacodec.github.io/av1-avif/)** is used by default, saving **~80%** space while maintaining the same perceived quality (lossy conversion)
+
 - It's an open format
 - Offers good compatibility: it's easy to view or share the image with others
 - Better than re-transcoding older formats (e.g., converting JPEG to a lower-quality JPEG)
 
 **[JPEG-XL](https://jpegxl.info/)** is a superior format to AVIF, has all AVIF's pros and more, except it lacks widespread compatibility 😔
+
 - Can losslessly convert JPEG to save **~20%** in space without losing any quality
 - Support bit-accurate conversion back to the original JPEG
 - A lossy JXL option is also available with similar quality/size ratio to AVIF
@@ -101,6 +116,7 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 If neither fits your needs, create your own conversion task: examples in [config](config)
 
 ## 🧯 JXL on older/quirky CPUs (Haswell, SIGILL / illegal instruction)
+
 If `cjxl`/`djxl` crashes with `illegal instruction`, use a custom image that builds `libjxl` for your CPU target.
 
 - `Dockerfile.goreleaser` now supports `LIBJXL_CPU_FLAGS`
@@ -115,6 +131,7 @@ For very old CPUs, lower the target further (example: `-march=x86-64-v2`).
 > Don't judge image compression artifacts by looking at the [Immich](https://github.com/immich-app/immich) low quality preview, zoom the image or download it and use an external viewer (Zooming on the Immich viewer will load the original image only if your browser is compatible with the format)
 
 ## 🎬 Videos
+
 Lossy **[H.265](wikipedia.org/wiki/High_Efficiency_Video_Coding)** CRF23 60fps is used by default to ensure storage savings even for short videos while maintaining the same perceived quality.
 
 All metadata is preserved and the video is not rotated (a different rotation than the original would cause viewing issues in the immich app)<br>
@@ -122,9 +139,11 @@ Lowering FPS or audio quality isn't worth it, would only give negligible file si
 It's recommended to only modify CRF and -preset speed to achieve the quality and speed you're after
 
 ## License
+
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details
 
 ## Acknowledgements
+
 - [JamesCullum/multipart-upload-proxy](https://github.com/JamesCullum/multipart-upload-proxy)
 - [libavif](https://github.com/AOMediaCodec/libavif)
 - [libjxl](https://github.com/libjxl/libjxl)
