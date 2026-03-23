@@ -74,9 +74,32 @@ func buildUploadDedupeKey(file multipart.File, header *multipart.FileHeader) (st
 	return fmt.Sprintf("%s,%d", hash, header.Size), nil
 }
 
-func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error {
+func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err error) {
 	jobID := jobIdCounter.Add(1)
 	jobLogger := newCustomLogger(logger, fmt.Sprintf("job %d: ", jobID))
+	responseWritten := false
+	defer func() {
+		if err == nil || responseWritten {
+			return
+		}
+		message := "failed to process file, view IUO logs for more info"
+		statusCode := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+			message = "incomplete upload body received"
+			statusCode = http.StatusBadRequest
+		case errors.Is(err, http.ErrMissingFile):
+			message = "uploaded form did not include file field"
+			statusCode = http.StatusBadRequest
+		}
+		result := internalErrorResult(message, err)
+		result.statusCode = statusCode
+		if writeErr := writeHTTPResult(w, result); writeErr != nil {
+			jobLogger.Printf("failed to write fallback error response: %v", writeErr)
+			return
+		}
+		responseWritten = true
+	}()
 
 	formFile, formFileHeader, err := r.FormFile(filterFormKey)
 	if err != nil {
@@ -138,6 +161,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 			if writeErr := writeHTTPResult(w, result); writeErr != nil {
 				return fmt.Errorf("failed to write processing error response: %w", writeErr)
 			}
+			responseWritten = true
 			return result.err
 		}
 		if taskProcessor.OriginalSize <= taskProcessor.ProcessedSize {
@@ -162,6 +186,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) error 
 	if err = writeHTTPResult(w, result); err != nil {
 		return fmt.Errorf("failed to write upstream response: %w", err)
 	}
+	responseWritten = true
 
 	if result.err != nil {
 		jobLogger.Printf("upload upstream error: %s", result.err.Error())
