@@ -17,6 +17,6 @@ tasks:
       - heif
 
   - name: ffmpeg
-    command: ffmpeg -noautorotate -i "{{.folder}}/{{.name}}.{{.extension}}" -c:v libx265 -crf 23 -filter:v fps=60 -c:a copy -preset fast -map_metadata 0 -movflags use_metadata_tags -tag:v hvc1 "{{.result_folder}}/{{.name}}.{{.extension}}"
+    command: ffmpeg -noautorotate -i "{{.folder}}/{{.name}}.{{.extension}}" -c:v libsvtav1 -crf 35 -preset 6 -filter:v fps=60 -c:a copy -map_metadata 0 -movflags use_metadata_tags "{{.result_folder}}/{{.name}}.mp4"
     extensions:
       - mp4
