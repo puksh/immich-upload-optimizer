@@ -107,16 +107,16 @@ func initChecksums() {
 			hadDuplicateLines = true
 			continue
 		}
-		beforeLenFake := len(fakeToOriginalChecksum)
-		beforeLenOrig := len(originalToFakeChecksum)
+		if oldOriginal, ok := fakeToOriginalChecksum[fake]; ok && oldOriginal != original {
+			hadAmbiguousMappings = true
+		}
+		if oldFake, ok := originalToFakeChecksum[original]; ok && oldFake != fake {
+			hadAmbiguousMappings = true
+		}
 		changed := setChecksumPair(fake, original)
 		if !changed {
 			// exact duplicate pair - already handled.
 			continue
-		}
-		// Detect a remap/override side-effect as ambiguous historical data.
-		if len(fakeToOriginalChecksum) < beforeLenFake+1 || len(originalToFakeChecksum) < beforeLenOrig+1 {
-			hadAmbiguousMappings = true
 		}
 		validLineSet[canonicalLine] = struct{}{}
 	}
@@ -126,9 +126,11 @@ func initChecksums() {
 	}
 
 	if hadCorruption || hadDuplicateLines || hadAmbiguousMappings {
-		validLines := make([]string, 0, len(validLineSet))
-		for line := range validLineSet {
-			validLines = append(validLines, line)
+		// Rebuild from canonical in-memory map so stale/overridden historical
+		// lines are not written back to disk.
+		validLines := make([]string, 0, len(fakeToOriginalChecksum))
+		for fake, original := range fakeToOriginalChecksum {
+			validLines = append(validLines, fake+","+original)
 		}
 		sort.Strings(validLines)
 		if err := rewriteChecksumsFile(validLines); err != nil {

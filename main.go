@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -305,7 +307,17 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 	w.Header().Del("Accept-Ranges")
 	w.Header().Set("Content-Type", "image/jpeg")
 	if cd := w.Header().Get("Content-Disposition"); cd != "" {
-		w.Header().Set("Content-Disposition", cd+".jpg")
+		if mediaType, params, parseErr := mime.ParseMediaType(cd); parseErr == nil {
+			if filename, ok := params["filename"]; ok && filename != "" {
+				ext := path.Ext(filename)
+				if ext == "" {
+					params["filename"] = filename + ".jpg"
+				} else {
+					params["filename"] = strings.TrimSuffix(filename, ext) + ".jpg"
+				}
+			}
+			w.Header().Set("Content-Disposition", mime.FormatMediaType(mediaType, params))
+		}
 	}
 	if fi, statErr := open.Stat(); statErr == nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
