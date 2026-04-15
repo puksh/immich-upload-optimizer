@@ -13,9 +13,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/viper"
 )
 
@@ -43,6 +45,7 @@ var downloadJpgFromJxl bool
 var downloadJpgFromAvif bool
 var jxlFallbackToOriginal bool
 var devMITMproxy bool
+var forceColors bool
 
 var config *Config
 
@@ -59,6 +62,7 @@ func init() {
 	viper.BindEnv("max_video_jobs")
 	viper.BindEnv("task_timeout_minutes")
 	viper.BindEnv("dev_mitm_proxy")
+	viper.BindEnv("force_colors")
 
 	viper.SetDefault("upstream", "")
 	viper.SetDefault("listen", ":2284")
@@ -71,6 +75,7 @@ func init() {
 	viper.SetDefault("max_video_jobs", 1)
 	viper.SetDefault("task_timeout_minutes", 120)
 	viper.SetDefault("dev_mitm_proxy", false)
+	viper.SetDefault("force_colors", true)
 
 	flag.BoolVar(&showVersion, "version", false, "Show the current version")
 	flag.StringVar(&upstreamURL, "upstream", viper.GetString("upstream"), "Upstream URL. Example: http://immich-server:2283")
@@ -84,7 +89,12 @@ func init() {
 	flag.IntVar(&maxVideoJobs, "max_video_jobs", viper.GetInt("max_video_jobs"), "Max number of video jobs running concurrently")
 	flag.IntVar(&taskTimeoutMinutes, "task_timeout_minutes", viper.GetInt("task_timeout_minutes"), "Timeout in minutes for each processing task before killing it")
 	flag.BoolVar(&devMITMproxy, "dev_mitm_proxy", viper.GetBool("dev_mitm_proxy"), "Route upstream HTTP traffic through local MITM proxy at http://localhost:8080 (development only)")
+	flag.BoolVar(&forceColors, "force_colors", viper.GetBool("force_colors"), "Force colored output even in non-TTY environments like Docker")
 	flag.Parse()
+
+	if forceColors {
+		color.NoColor = false
+	}
 
 	if showVersion {
 		fmt.Println(printVersion())
@@ -112,18 +122,18 @@ var DevMITMproxy bool
 
 func main() {
 	baseLogger = log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	log.Printf("Starting %s on %s...", printVersion(), listenAddr)
+	log.Print(green("Starting %s on %s...", printVersion(), listenAddr))
 	tmpDir := os.Getenv("TMPDIR")
 	if tmpDir != "" {
 		info, err := os.Stat(tmpDir)
 		if err == nil && info.IsDir() {
-			log.Printf("tmp directory: %s", tmpDir)
+			log.Print(cyan("tmp directory: %s", tmpDir))
 			_ = removeAllContents(tmpDir)
 		} else {
 			panic("TMPDIR must be a directory")
 		}
 	} else {
-		log.Printf("no tmp directory set, uploaded files will be saved on disk multiple times, this can shorten your disk lifespan !")
+		log.Print(yellow("no tmp directory set, uploaded files will be saved on disk, this will shorten your disk lifespan!"))
 	}
 	// Proxy
 	proxy = httputil.NewSingleHostReverseProxy(remote)
@@ -133,7 +143,7 @@ func main() {
 	}
 	server := &http.Server{Addr: listenAddr, Handler: http.HandlerFunc(handleRequest)}
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Error starting immich-upload-optimizer: %v", err)
+		log.Fatal(red("Error starting immich-upload-optimizer: %v", err))
 	}
 }
 
@@ -162,9 +172,13 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		break
 	case isAssetsUpload(r):
 		err = newJob(r, w, logger)
-		logger.SetErrPrefix("upload")
+		logger.SetErrPrefix("job err")
 		logger.Error(err, "")
 		return
+	case isBulkUploadCheck(r):
+		if err = replaceBulkUploadCheck(w, r, logger); err == nil {
+			return
+		}
 	default:
 		if replacer := getChecksumReplacer(w, r, logger); replacer != nil {
 			logger.SetErrPrefix(fmt.Sprintf("replacer %d", replacer.typeId))
@@ -227,7 +241,8 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 	if req, err = http.NewRequest("GET", upstreamURL+r.URL.String(), nil); logger.Error(err, "new GET") {
 		return
 	}
-	req.Header = r.Header
+	setHeaders(req.Header, r.Header)
+	req.Header.Del("Range")
 	if resp, err = getHTTPclient().Do(req); logger.Error(err, "getHTTPclient.Do") {
 		return
 	}
@@ -277,12 +292,24 @@ func downloadAndConvertImage(w http.ResponseWriter, r *http.Request, logger *cus
 	default:
 		return errors.New("should never happen")
 	}
-	logger.Printf("conversion complete: %s", strings.ReplaceAll(string(output), "\n", " - "))
+	logger.Print(green("conversion complete: %s", strings.ReplaceAll(string(output), "\n", " - ")))
 	cleanupBlob()
 	if open, err = os.Open(blob.Name() + ".jpg"); logger.Error(err, "open jpg") {
 		return
 	}
 	defer func() { open.Close(); _ = os.Remove(open.Name()) }()
+	// Forward upstream headers without Accept-Ranges and with .jpg filename extension
+	setHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Encoding")
+	w.Header().Del("Transfer-Encoding")
+	w.Header().Del("Accept-Ranges")
+	w.Header().Set("Content-Type", "image/jpeg")
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		w.Header().Set("Content-Disposition", cd+".jpg")
+	}
+	if fi, statErr := open.Stat(); statErr == nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	}
 	if _, err = io.Copy(w, open); logger.Error(err, "write resp") {
 		return
 	}

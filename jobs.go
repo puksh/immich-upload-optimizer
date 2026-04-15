@@ -285,7 +285,4 @@ func uploadUpstream(r *http.Request, file io.ReadSeeker, name string) uploadHTTP
 		body:       body,
 		err:        nil,
 	}
-
-	// Unreachable, kept for readability in previous code paths.
-	// return uploadHTTPResult{}
 }

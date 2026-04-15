@@ -33,8 +33,8 @@ type TaskProcessor struct {
 	logger *customLogger
 }
 
-func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHeader) (*TaskProcessor, error) {
-	originalExtension := path.Ext(header.Filename)
+func NewTaskProcessor(file *os.File, fileName string, fileSize int64, logger *customLogger) (*TaskProcessor, error) {
+	originalExtension := path.Ext(fileName)
 	if !isValidFilename(originalExtension) {
 		return nil, fmt.Errorf("invalid file extension: %s", originalExtension)
 	}
@@ -52,8 +52,26 @@ func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHe
 		return nil, fmt.Errorf("no task found for file extension .%s", checkExt)
 	}
 
-	if header.Size < task.MinFilesizeBytes {
-		return nil, fmt.Errorf("file size is smaller than minimum: %d < %d", header.Size, task.MinFilesizeBytes)
+	if fileSize < task.MinFilesizeBytes {
+		return nil, fmt.Errorf("file size is smaller than minimum: %d < %d", fileSize, task.MinFilesizeBytes)
+	}
+
+	return &TaskProcessor{
+		Task:                 task,
+		OriginalFile:         file,
+		OriginalFilename:     fileName,
+		OriginalExtension:    originalExtension,
+		OriginalSize:         fileSize,
+		tempOriginalFilePath: file.Name(),
+		logger:               logger,
+	}, nil
+}
+
+// Backward-compatible constructor used by upload code paths that still operate on multipart.File.
+func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHeader) (*TaskProcessor, error) {
+	originalExtension := path.Ext(header.Filename)
+	if !isValidFilename(originalExtension) {
+		return nil, fmt.Errorf("invalid file extension: %s", originalExtension)
 	}
 
 	originalFile, err := os.CreateTemp("", "upload-*"+originalExtension)
@@ -61,19 +79,19 @@ func NewTaskProcessorFromMultipart(file multipart.File, header *multipart.FileHe
 		return nil, fmt.Errorf("unable to create temp file: %w", err)
 	}
 
-	_, err = io.Copy(originalFile, file)
-	if err != nil {
+	if _, err = io.Copy(originalFile, file); err != nil {
+		_ = originalFile.Close()
+		_ = os.Remove(originalFile.Name())
 		return nil, fmt.Errorf("unable to write temp file: %w", err)
 	}
 
-	return &TaskProcessor{
-		Task:                 task,
-		OriginalFile:         originalFile,
-		OriginalFilename:     header.Filename,
-		OriginalExtension:    originalExtension,
-		OriginalSize:         header.Size,
-		tempOriginalFilePath: originalFile.Name(),
-	}, nil
+	if _, err = originalFile.Seek(0, io.SeekStart); err != nil {
+		_ = originalFile.Close()
+		_ = os.Remove(originalFile.Name())
+		return nil, fmt.Errorf("unable to seek temp file: %w", err)
+	}
+
+	return NewTaskProcessor(originalFile, header.Filename, header.Size, nil)
 }
 
 func (tp *TaskProcessor) SetLogger(logger *customLogger) {
@@ -157,18 +175,18 @@ func (tp *TaskProcessor) Run() error {
 	cmd := exec.Command("sh", "-c", cmdLine.String())
 	cmd.Dir = path.Dir(configFile)
 	setTaskProcessGroup(cmd)
-	
+
 	// Use separate buffers to avoid deadlock on large output
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	// Run command with timeout using a goroutine
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Run()
 	}()
-	
+
 	timeout := time.After(taskTimeout)
 	select {
 	case err = <-done:
@@ -178,7 +196,7 @@ func (tp *TaskProcessor) Run() error {
 		tp.logf("task exceeded timeout of %s, process and all children were killed", taskTimeout)
 		return fmt.Errorf("task timeout: process exceeded %s limit while running command:\n%s", taskTimeout, cmdLine.String())
 	}
-	
+
 	output := append(stdout.Bytes(), stderr.Bytes()...)
 	if err != nil {
 		if jxlFallbackToOriginal && isJxlCommand(cmdLine.String()) && isJxlUnsupportedCPUError(err, output) {
@@ -187,7 +205,7 @@ func (tp *TaskProcessor) Run() error {
 				return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s\nFallback error:\n%v", err, cmdLine.String(), string(output), fallbackErr)
 			}
 		} else {
-		return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, cmdLine.String(), string(output))
+			return fmt.Errorf("%w while running command:\n%s\nOutput:\n%s", err, cmdLine.String(), string(output))
 		}
 	}
 
@@ -215,7 +233,6 @@ func (tp *TaskProcessor) Run() error {
 
 	return nil
 }
-
 
 func isJxlUnsupportedCPUError(err error, output []byte) bool {
 	if err == nil {

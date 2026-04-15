@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +33,8 @@ func SHA1(file io.ReadSeeker) (string, error) {
 }
 
 var mapLock sync.RWMutex
-var fakeToOriginalChecksum map[string]map[string]struct{}
+var fakeToOriginalChecksum map[string]string
+var originalToFakeChecksum map[string]string
 var checksumFileLock sync.Mutex
 
 const defaultChecksumFilePerm os.FileMode = 0644
@@ -44,11 +47,32 @@ func isValidSHA1Base64(s string) bool {
 	return err == nil && len(b) == sha1.Size
 }
 
+// setChecksumPair ensures fake<->original 1:1 relation in memory maps.
+func setChecksumPair(fake, original string) bool {
+	if existingOriginal, ok := fakeToOriginalChecksum[fake]; ok && existingOriginal == original {
+		fmt.Println(magenta("Duplicate checksum pair: %s <-> %s", fake, original))
+		return false
+	}
+	if oldOriginal, ok := fakeToOriginalChecksum[fake]; ok && oldOriginal != original {
+		fmt.Println(red("Duplicate fake checksum: %s -> %s , %s", fake, oldOriginal, original))
+		delete(originalToFakeChecksum, oldOriginal)
+	}
+	if oldFake, ok := originalToFakeChecksum[original]; ok && oldFake != fake {
+		fmt.Println(red("Duplicate orig checksum: %s -> %s , %s", original, oldFake, fake))
+		delete(fakeToOriginalChecksum, oldFake)
+	}
+	fakeToOriginalChecksum[fake] = original
+	originalToFakeChecksum[original] = fake
+	return true
+}
+
 func initChecksums() {
 	checksumFileLock.Lock()
 	defer checksumFileLock.Unlock()
 
-	loaded := make(map[string]map[string]struct{})
+	fakeToOriginalChecksum = make(map[string]string)
+	originalToFakeChecksum = make(map[string]string)
+
 	validLineSet := make(map[string]struct{})
 	hadCorruption := false
 	hadDuplicateLines := false
@@ -56,16 +80,11 @@ func initChecksums() {
 
 	file, err := os.OpenFile(checksumsFile, os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
-		mapLock.Lock()
-		fakeToOriginalChecksum = loaded
-		mapLock.Unlock()
 		return
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	// Default Scanner token limit is 64 KiB. Corrupted tails can exceed this.
-	// Increase limit so we can safely skip malformed oversized lines.
 	scanner.Buffer(make([]byte, 1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -88,36 +107,23 @@ func initChecksums() {
 			hadDuplicateLines = true
 			continue
 		}
-		if _, ok := loaded[fake]; !ok {
-			loaded[fake] = make(map[string]struct{})
+		beforeLenFake := len(fakeToOriginalChecksum)
+		beforeLenOrig := len(originalToFakeChecksum)
+		changed := setChecksumPair(fake, original)
+		if !changed {
+			// exact duplicate pair - already handled.
+			continue
 		}
-		loaded[fake][original] = struct{}{}
+		// Detect a remap/override side-effect as ambiguous historical data.
+		if len(fakeToOriginalChecksum) < beforeLenFake+1 || len(originalToFakeChecksum) < beforeLenOrig+1 {
+			hadAmbiguousMappings = true
+		}
 		validLineSet[canonicalLine] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading csv:", err)
+		fmt.Println(red("Error reading csv: %v", err))
 		hadCorruption = true
 	}
-
-	ambiguousMappings := 0
-	for fake, originals := range loaded {
-		if len(originals) <= 1 {
-			continue
-		}
-		ambiguousMappings++
-		hadAmbiguousMappings = true
-		for original := range originals {
-			delete(validLineSet, fake+","+original)
-		}
-		delete(loaded, fake)
-	}
-	if ambiguousMappings > 0 {
-		fmt.Printf("Warning: removed %d ambiguous processed checksum mapping(s) (same processed checksum linked to multiple originals)\n", ambiguousMappings)
-	}
-
-	mapLock.Lock()
-	fakeToOriginalChecksum = loaded
-	mapLock.Unlock()
 
 	if hadCorruption || hadDuplicateLines || hadAmbiguousMappings {
 		validLines := make([]string, 0, len(validLineSet))
@@ -126,24 +132,7 @@ func initChecksums() {
 		}
 		sort.Strings(validLines)
 		if err := rewriteChecksumsFile(validLines); err != nil {
-			fmt.Println("Error cleaning corrupted checksums:", err)
-		} else {
-			switch {
-			case hadCorruption && hadDuplicateLines && hadAmbiguousMappings:
-				fmt.Println("Removed corrupted, duplicate, and ambiguous checksum entries from file")
-			case hadCorruption && hadDuplicateLines:
-				fmt.Println("Removed corrupted and duplicate checksum entries from file")
-			case hadCorruption && hadAmbiguousMappings:
-				fmt.Println("Removed corrupted and ambiguous checksum entries from file")
-			case hadDuplicateLines && hadAmbiguousMappings:
-				fmt.Println("Removed duplicate and ambiguous checksum entries from file")
-			case hadCorruption:
-				fmt.Println("Removed corrupted checksum entries from file")
-			case hadDuplicateLines:
-				fmt.Println("Removed duplicate checksum entries from file")
-			case hadAmbiguousMappings:
-				fmt.Println("Removed ambiguous checksum entries from file")
-			}
+			fmt.Println(red("Error cleaning corrupted checksums: %v", err))
 		}
 	}
 }
@@ -159,9 +148,6 @@ func rewriteChecksumsFile(validLines []string) error {
 		return err
 	}
 	tmpPath := tmpFile.Name()
-	// renamed: the rename has completed; defer must not remove tmpPath (it no longer exists at that path).
-	// destRemoved: checksumsFile has been deleted but the rename hasn't succeeded yet;
-	// defer must NOT remove tmpPath so the data survives on disk as a recovery artifact.
 	renamed := false
 	destRemoved := false
 	defer func() {
@@ -191,12 +177,9 @@ func rewriteChecksumsFile(validLines []string) error {
 	}
 
 	if err = os.Rename(tmpPath, checksumsFile); err != nil {
-		// Best-effort Windows-friendly fallback: remove destination then retry.
 		if removeErr := os.Remove(checksumsFile); removeErr != nil {
 			return err
 		}
-		// Destination is gone. From here on the defer must not delete tmpPath on
-		// failure — it is the only remaining copy of the valid checksum data.
 		destRemoved = true
 		if err = os.Rename(tmpPath, checksumsFile); err != nil {
 			return fmt.Errorf("rename failed after removing destination (%s still contains valid data): %w", tmpPath, err)
@@ -220,35 +203,13 @@ func addChecksums(fake, original string) {
 		return
 	}
 	go func() {
-		newPair := false
 		mapLock.Lock()
-		if fakeToOriginalChecksum == nil {
-			fakeToOriginalChecksum = make(map[string]map[string]struct{})
-		}
-		if _, ok := fakeToOriginalChecksum[fake]; !ok {
-			fakeToOriginalChecksum[fake] = make(map[string]struct{})
-		}
-		if _, exists := fakeToOriginalChecksum[fake][original]; !exists {
-			fakeToOriginalChecksum[fake][original] = struct{}{}
-			newPair = true
-		}
+		changed := setChecksumPair(fake, original)
 		mapLock.Unlock()
-		if newPair {
+		if changed {
 			_ = appendToCSV(fake, original)
 		}
 	}()
-}
-
-// toOriginalChecksum: Must acquire mapLock.RLock() before calling
-func toOriginalChecksum(checksum string) (string, bool) {
-	originals, ok := fakeToOriginalChecksum[checksum]
-	if !ok || len(originals) != 1 {
-		return "", false
-	}
-	for original := range originals {
-		return original, true
-	}
-	return "", false
 }
 
 func appendToCSV(key, value string) error {
@@ -288,12 +249,78 @@ func (asset Asset) toOriginalAsset() {
 	}
 	if c, ok := asset["checksum"]; ok {
 		if checksum, ok := c.(string); ok {
-			if original, ok := toOriginalChecksum(checksum); ok {
-				//fmt.Printf("checksum: %s -> %s\n", checksum, original)
+			if original, ok := fakeToOriginalChecksum[checksum]; ok {
 				asset["checksum"] = original
 			}
 		}
 	}
+}
+
+type bulkUploadCheckItem struct {
+	ID       string `json:"id"`
+	Checksum string `json:"checksum"`
+}
+
+type bulkUploadCheckRequest struct {
+	Assets []bulkUploadCheckItem `json:"assets"`
+}
+
+type bulkUploadCheckResult struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"`
+	AssetID string `json:"assetId"`
+}
+
+type bulkUploadCheckResponse struct {
+	Results []bulkUploadCheckResult `json:"results"`
+}
+
+type assetMediaResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func replaceBulkUploadCheck(w http.ResponseWriter, r *http.Request, logger *customLogger) error {
+	logger.SetErrPrefix("bulk-upload-check")
+	var err error
+	var bodyBytes []byte
+	if bodyBytes, err = io.ReadAll(r.Body); logger.Error(err, "read body") {
+		return err
+	}
+	var checkReq bulkUploadCheckRequest
+	if err = json.Unmarshal(bodyBytes, &checkReq); logger.Error(err, "json unmarshal") {
+		return err
+	}
+	mapLock.RLock()
+	for i, asset := range checkReq.Assets {
+		key := asset.Checksum
+		if raw, err := hex.DecodeString(key); err == nil && len(raw) == sha1.Size {
+			key = base64.StdEncoding.EncodeToString(raw)
+		}
+		if fake, ok := originalToFakeChecksum[key]; ok {
+			checkReq.Assets[i].Checksum = fake
+		}
+	}
+	mapLock.RUnlock()
+	if bodyBytes, err = json.Marshal(checkReq); logger.Error(err, "json marshal") {
+		return err
+	}
+	var req *http.Request
+	if req, err = http.NewRequest(r.Method, upstreamURL+r.URL.String(), bytes.NewReader(bodyBytes)); logger.Error(err, "new request") {
+		return err
+	}
+	req.Header = r.Header
+	var resp *http.Response
+	if resp, err = getHTTPclient().Do(req); logger.Error(err, "getHTTPclient.Do") {
+		return err
+	}
+	defer resp.Body.Close()
+	setHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if _, err = io.Copy(w, resp.Body); logger.Error(err, "resp write") {
+		return err
+	}
+	return nil
 }
 
 func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customLogger) *Replacer {
@@ -345,7 +372,7 @@ func (replacer Replacer) Replace() (err error) {
 	w, r, logger := replacer.w, replacer.r, replacer.logger
 	var req *http.Request
 	var resp *http.Response
-	if req, err = http.NewRequest(r.Method, upstreamURL+r.URL.String(), nil); logger.Error(err, "new POST") {
+	if req, err = http.NewRequest(r.Method, upstreamURL+r.URL.String(), nil); logger.Error(err, "new request") {
 		return
 	}
 	req.Header = r.Header

@@ -13,9 +13,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
 ARG LIBJXL_VERSION=0.11.2
 ARG LIBJXL_CPU_FLAGS="-O2 -march=haswell -mtune=haswell -mno-avx512f -mno-avx512bw -mno-avx512vl"
-ARG LIBAVIF_VERSION=1.3.0
-ARG LIBHEIF_VERSION=1.20.2
-ARG IMAGE_MAGICK_VERSION=7.1.2-15
+ARG LIBAVIF_VERSION=1.4.1
+ARG LIBHEIF_VERSION=1.21.2
+ARG IMAGE_MAGICK_VERSION=7.1.2-18
+
 # Install build dependencies
 RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     # Download tools
@@ -32,70 +33,72 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     libde265-dev \
     libx265-dev \
     libjpeg62-turbo-dev \
+    libwebm-dev \
+    aom-tools \
     # libavif
     libaom-dev \
-    libyuv-dev
+    libyuv-dev \
+    && apt-get clean && rm -fr /var/lib/apt/lists/*
 
 # Build libjxl
 RUN git clone -b v${LIBJXL_VERSION} https://github.com/libjxl/libjxl.git --depth 1 --recursive --shallow-submodules && \
-        export CC=clang CXX=clang++ && \
-        cmake -S libjxl -B libjxl/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DJPEGXL_ENABLE_TOOLS=ON \
-            -DJPEGXL_ENABLE_EXAMPLES=OFF \
-            -DCMAKE_C_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" \
-            -DCMAKE_CXX_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" && \
-        cmake --build libjxl/build --config Release --parallel && \
-        cmake --install libjxl/build && \
-        ldconfig /usr/local/lib
+    export CC=clang CXX=clang++ && \
+    cmake -S libjxl -B libjxl/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=OFF \
+        -DJPEGXL_ENABLE_TOOLS=ON \
+        -DJPEGXL_ENABLE_EXAMPLES=OFF \
+        -DCMAKE_C_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" \
+        -DCMAKE_CXX_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" && \
+    cmake --build libjxl/build --config Release --parallel && \
+    cmake --install libjxl/build && \
+    ldconfig /usr/local/lib
 
 # Build libavif (TODO: don't build from sources as soon as a new release includes the orientation fix: https://github.com/AOMediaCodec/libavif/issues/2727)
-RUN git clone -b v${LIBAVIF_VERSION} https://github.com/AOMediaCodec/libavif.git && \
+RUN git clone -b v${LIBAVIF_VERSION} --depth 1 https://github.com/AOMediaCodec/libavif.git && \
     cmake -S libavif -B libavif/build -DAVIF_CODEC_AOM=SYSTEM -DAVIF_BUILD_APPS=ON && \
     cmake --build libavif/build --config Release --parallel && \
     cmake --install libavif/build && \
-    ldconfig /usr/local/lib
+    ldconfig /usr/local/lib && \
+    cd / && rm -fr libavif
 
 # Build libheif
 RUN git clone -b v${LIBHEIF_VERSION} --depth 1 https://github.com/strukturag/libheif.git && \
     cd libheif/ && mkdir build && cd build && \
     cmake --preset=release .. && \
-    make && make install && \
-    ldconfig /usr/local/lib
+    make -j"$(nproc)" && make install && \
+    ldconfig /usr/local/lib && \
+    cd / && rm -fr libheif
 
 # Build ImageMagick with AVIF & JXL read/write support
 RUN git clone -b ${IMAGE_MAGICK_VERSION} --depth 1 https://github.com/ImageMagick/ImageMagick.git && \
     cd ImageMagick && \
     LIBS="-lsharpyuv" ./configure --without-magick-plus-plus --disable-docs --disable-static --with-tiff --with-jxl --with-heic --with-tcmalloc && \
-    make && make install && \
-    ldconfig /usr/local/lib
+    make -j"$(nproc)" && make install && \
+    ldconfig /usr/local/lib && \
+    cd / && rm -fr ImageMagick
 
 # Download prebuilt Caesium bin
 # Redeclare to inherit the global ARG value inside this build stage
 ARG TARGETARCH
-RUN CAESIUM_LATEST_RELEASE=$(curl -s https://api.github.com/repos/Lymphatus/caesium-clt/releases/latest | jq -r '.tag_name') && \
-    # Fall back to uname -m when TARGETARCH is not set (plain docker build without --platform)
+RUN CAESIUM_VER=$(curl -sf https://api.github.com/repos/Lymphatus/caesium-clt/releases/latest | jq -r '.tag_name') || { echo "Failed to fetch Caesium latest release"; exit 1; } && \
     ARCH="${TARGETARCH:-$(uname -m)}" && \
     if [ "$ARCH" = "amd64" ] || [ "$ARCH" = "x86_64" ]; then \
         CAESIUM_ARCH=x86_64-unknown-linux-musl; \
     elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
         CAESIUM_ARCH=aarch64-unknown-linux-musl; \
     else \
-        echo "Unsupported arch: $ARCH"; exit 126; \
+        echo "Unsupported arch: $ARCH"; exit 1; \
     fi && \
-    CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_LATEST_RELEASE}-${CAESIUM_ARCH} && \
-    curl -sS -L -o /tmp/${CAESIUM_ARCHIVE}.tar.gz \
-    https://github.com/Lymphatus/caesium-clt/releases/latest/download/${CAESIUM_ARCHIVE}.tar.gz && \
-    tar xzf /tmp/${CAESIUM_ARCHIVE}.tar.gz -C /tmp && \
-    mv /tmp/${CAESIUM_ARCHIVE}/caesiumclt /usr/local/bin/caesiumclt
+    CAESIUM_ARCHIVE=caesiumclt-${CAESIUM_VER}-${CAESIUM_ARCH} && \
+    curl -sfSL -o /tmp/caesium.tar.gz "https://github.com/Lymphatus/caesium-clt/releases/download/${CAESIUM_VER}/${CAESIUM_ARCHIVE}.tar.gz" && \
+    tar xzf /tmp/caesium.tar.gz --strip-components 1 -C /tmp && \
+    mv "/tmp/caesiumclt" /usr/local/bin/caesiumclt && \
+    rm -fr /tmp/*
 
 FROM debian:sid-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
-    #libvips-tools \
-    #exiftool \
-    #handbrake-cli \
     ffmpeg \
     # ImageMagick deps
     libwebpmux3 \
@@ -109,10 +112,11 @@ RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
     # libheif deps
     x265 \
     libde265-0 \
+    libwebm1 \
     # libavif deps
     libaom3 \
     libyuv0 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -fr /var/lib/apt/lists/*
 
 # Copy libavif, libheif, ImageMagick, caesiumclt from builder
 COPY --from=builder /usr/local /usr/local

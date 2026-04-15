@@ -100,6 +100,7 @@ All flags are also available as environment variables using the prefix `IUO_` fo
 - `-max_video_jobs`: Max number of video jobs running concurrently (default: `1`)
 - `-task_timeout_minutes`: Timeout in minutes for each processing task before killing it (default: `120`)
 - `-dev_mitm_proxy`: Development only. Routes upstream HTTP traffic through `http://localhost:8080` (default: `false`)
+- `-force_colors`: Force colored log output even in non-TTY environments like Docker (default: `true`)
 
 ## 📸 Images
 

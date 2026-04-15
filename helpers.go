@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"github.com/andybalholm/brotli"
 	"io"
 	"log"
 	"net/http"
@@ -13,12 +12,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/andybalholm/brotli"
 )
 
+// All images accepted by immich: https://github.com/immich-app/immich/blob/main/server/src/utils/mime-types.ts
 var filterFormKey = "assetData"
 
-// All images accepted by immich: https://github.com/immich-app/immich/blob/main/server/src/utils/mime-types.ts
 var imageExtensions = []string{"3fr", "ari", "arw", "cap", "cin", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25", "kdc", "mrw", "nef", "nrw", "orf", "ori", "pef", "psd", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f", "avif", "gif", "jpeg", "jpg", "png", "webp", "bmp", "heic", "heif", "hif", "insp", "jp2", "jpe", "jxl", "svg", "tif", "tiff"}
+
+func isBulkUploadCheck(r *http.Request) bool {
+	return r.Method == "POST" && r.URL.Path == "/api/assets/bulk-upload-check"
+}
 
 func isAssetsUpload(r *http.Request) bool {
 	return r.Method == "POST" && r.URL.Path == "/api/assets" && strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
@@ -52,7 +57,7 @@ func isAssetView(r *http.Request) bool {
 
 func isOriginalDownloadPath(r *http.Request) (bool, []string) {
 	re := regexp.MustCompile(`^/api/assets/([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12})/original$`)
-	matches := re.FindStringSubmatch(r.URL.String())
+	matches := re.FindStringSubmatch(r.URL.Path)
 	return r.Method == "GET" && len(matches) == 2, matches
 }
 
@@ -109,22 +114,22 @@ func printVersion() string {
 
 func validateInput() {
 	if upstreamURL == "" {
-		log.Fatal("the -upstream flag is required")
+		log.Fatal(red("the -upstream flag is required"))
 	}
 
 	var err error
 	remote, err = url.Parse(upstreamURL)
 	if err != nil {
-		log.Fatalf("invalid upstream URL: %v", err)
+		log.Fatal(red("invalid upstream URL: %v", err))
 	}
 
 	if configFile == "" {
-		log.Fatal("the -tasks_file flag is required")
+		log.Fatal(red("the -tasks_file flag is required"))
 	}
 
 	config, err = NewConfig(&configFile)
 	if err != nil {
-		log.Fatalf("error loading config file: %v", err)
+		log.Fatal(red("error loading config file: %v", err))
 	}
 }
 
