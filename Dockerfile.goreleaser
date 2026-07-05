@@ -11,11 +11,11 @@ RUN go mod tidy && CGO_ENABLED=0 go build -o immich-upload-optimizer .
 FROM debian:sid-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Build process inspired by: https://github.com/dooman87/imagemagick-docker/blob/main/Dockerfile.bookworm
-ARG LIBJXL_VERSION=0.11.2
-ARG LIBJXL_CPU_FLAGS="-O2 -march=haswell -mtune=haswell -mno-avx512f -mno-avx512bw -mno-avx512vl"
-ARG LIBAVIF_VERSION=1.4.1
-ARG LIBHEIF_VERSION=1.21.2
-ARG IMAGE_MAGICK_VERSION=7.1.2-18
+ARG LIBJXL_VERSION=0.12.0
+ARG LIBJXL_CPU_FLAGS="-O2 -march=skylake -mtune=skylake"
+ARG LIBAVIF_VERSION=1.4.2
+ARG LIBHEIF_VERSION=1.23.0
+ARG IMAGE_MAGICK_VERSION=7.1.2-26
 
 # Install build dependencies
 RUN apt-get -y update && apt-get install -qq -y --no-install-recommends \
