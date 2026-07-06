@@ -370,6 +370,11 @@ func doSyncStreamRequest(r *http.Request, bodyBytes []byte) (uploadHTTPResult, e
 		return uploadHTTPResult{}, err
 	}
 	req.Header = r.Header.Clone()
+	// Force an uncompressed upstream response. rewriteSyncStreamBody parses
+	// the body as newline-delimited JSON; if the response came back gzip/br
+	// encoded (likely on large full-sync payloads) parsing silently fails
+	// and checksum rewriting never happens, breaking client-side dedup.
+	req.Header.Del("Accept-Encoding")
 
 	resp, err := getHTTPclient().Do(req)
 	if err != nil {
@@ -414,9 +419,8 @@ func replaceSyncStream(w http.ResponseWriter, r *http.Request, logger *customLog
 
 func writeSyncStreamBody(w http.ResponseWriter, headers http.Header, statusCode int, body []byte, logger *customLogger) error {
 	setHeaders(w.Header(), headers)
-	if !slices.Contains([]string{"gzip", "br"}, headers.Get("Content-Encoding")) {
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	}
+	w.Header().Del("Content-Encoding")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(statusCode)
 	if len(body) == 0 {
 		return nil
@@ -563,6 +567,7 @@ func doBulkUploadCheckRequest(r *http.Request, bodyBytes []byte) (uploadHTTPResu
 		return uploadHTTPResult{}, err
 	}
 	req.Header = r.Header.Clone()
+	req.Header.Del("Accept-Encoding")
 
 	resp, err := getHTTPclient().Do(req)
 	if err != nil {
@@ -588,6 +593,7 @@ func writeRawBulkUploadCheckResponse(w http.ResponseWriter, result uploadHTTPRes
 
 func writeBulkUploadCheckBody(w http.ResponseWriter, headers http.Header, statusCode int, body []byte, logger *customLogger) error {
 	setHeaders(w.Header(), headers)
+	w.Header().Del("Content-Encoding")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(statusCode)
 	if len(body) == 0 {
