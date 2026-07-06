@@ -437,6 +437,9 @@ func getChecksumReplacer(w http.ResponseWriter, r *http.Request, logger *customL
 	if isAssetView(r) {
 		return &Replacer{w, r, logger, TypeAssetView}
 	}
+	if isSearchMetadata(r) {
+        return &Replacer{w, r, logger, TypeSearch}
+    }
 	return nil
 }
 
@@ -451,6 +454,7 @@ const (
 	TypeAlbum = iota
 	TypeFull
 	TypeAssetView
+	TypeSearch
 )
 
 func (replacer Replacer) Replace() (err error) {
@@ -524,6 +528,25 @@ func (replacer Replacer) Replace() (err error) {
 			asset.toOriginalAsset()
 			mapLock.RUnlock()
 			if jsonBuf, err = json.Marshal(asset); logger.Error(err, "json marshal") {
+				return
+			}
+		case TypeSearch:
+			var resp map[string]any
+			if err = json.Unmarshal(jsonBuf, &resp); logger.Error(err, "json unmarshal") {
+				return
+			}
+			if assetsObj, ok := resp[assetsKey].(map[string]any); ok {
+				if items, ok := assetsObj["items"].([]any); ok {
+					mapLock.RLock()
+					for _, it := range items {
+						if a, ok := it.(map[string]any); ok {
+							Asset(a).toOriginalAsset()
+						}
+					}
+					mapLock.RUnlock()
+				}
+			}
+			if jsonBuf, err = json.Marshal(resp); logger.Error(err, "json marshal") {
 				return
 			}
 		default:
