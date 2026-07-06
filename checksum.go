@@ -293,33 +293,138 @@ func replaceBulkUploadCheck(w http.ResponseWriter, r *http.Request, logger *cust
 	if err = json.Unmarshal(bodyBytes, &checkReq); logger.Error(err, "json unmarshal") {
 		return err
 	}
+	originalAssets, mappedAssets := buildBulkUploadCheckRequests(checkReq)
+	bodyBytes, err = json.Marshal(bulkUploadCheckRequest{Assets: originalAssets})
+	if logger.Error(err, "json marshal") {
+		return err
+	}
+	originalResult, err := doBulkUploadCheckRequest(r, bodyBytes)
+	if logger.Error(err, "upstream request") {
+		return err
+	}
+	if originalResult.statusCode != http.StatusOK {
+		return writeRawBulkUploadCheckResponse(w, originalResult)
+	}
+
+	var originalResp bulkUploadCheckResponse
+	if err = json.Unmarshal(originalResult.body, &originalResp); logger.Error(err, "json unmarshal") {
+		return err
+	}
+	if len(mappedAssets) == 0 {
+		return writeRawBulkUploadCheckResponse(w, originalResult)
+	}
+
+	mappedBodyBytes, err := json.Marshal(bulkUploadCheckRequest{Assets: mappedAssets})
+	if logger.Error(err, "json marshal") {
+		return err
+	}
+	mappedResult, err := doBulkUploadCheckRequest(r, mappedBodyBytes)
+	if logger.Error(err, "mapped upstream request") {
+		return err
+	}
+	if mappedResult.statusCode != http.StatusOK {
+		return fmt.Errorf("mapped bulk upload check returned status %d", mappedResult.statusCode)
+	}
+
+	var mappedResp bulkUploadCheckResponse
+	if err = json.Unmarshal(mappedResult.body, &mappedResp); logger.Error(err, "json unmarshal") {
+		return err
+	}
+
+	originalResults := make(map[string]bulkUploadCheckResult, len(originalResp.Results))
+	for _, result := range originalResp.Results {
+		originalResults[result.ID] = result
+	}
+	mappedResults := make(map[string]bulkUploadCheckResult, len(mappedResp.Results))
+	for _, result := range mappedResp.Results {
+		mappedResults[result.ID] = result
+	}
+
+	merged := bulkUploadCheckResponse{Results: make([]bulkUploadCheckResult, 0, len(checkReq.Assets))}
+	for _, asset := range checkReq.Assets {
+		result, ok := originalResults[asset.ID]
+		if !ok {
+			continue
+		}
+		if result.Action == "accept" {
+			if mappedResult, ok := mappedResults[asset.ID]; ok && mappedResult.Action == "reject" {
+				result = mappedResult
+			}
+		}
+		merged.Results = append(merged.Results, result)
+	}
+
+	if bodyBytes, err = json.Marshal(merged); logger.Error(err, "json marshal") {
+		return err
+	}
+	return writeBulkUploadCheckBody(w, originalResult.headers, originalResult.statusCode, bodyBytes, logger)
+}
+
+func buildBulkUploadCheckRequests(checkReq bulkUploadCheckRequest) ([]bulkUploadCheckItem, []bulkUploadCheckItem) {
+	originalAssets := make([]bulkUploadCheckItem, 0, len(checkReq.Assets))
+	mappedAssets := make([]bulkUploadCheckItem, 0, len(checkReq.Assets))
+
 	mapLock.RLock()
-	for i, asset := range checkReq.Assets {
-		key := asset.Checksum
-		if raw, err := hex.DecodeString(key); err == nil && len(raw) == sha1.Size {
-			key = base64.StdEncoding.EncodeToString(raw)
+	defer mapLock.RUnlock()
+
+	for _, asset := range checkReq.Assets {
+		key := normalizeChecksum(asset.Checksum)
+		originalAssets = append(originalAssets, bulkUploadCheckItem{ID: asset.ID, Checksum: key})
+		if fake, ok := originalToFakeChecksum[key]; ok && fake != key {
+			mappedAssets = append(mappedAssets, bulkUploadCheckItem{ID: asset.ID, Checksum: fake})
 		}
-		if fake, ok := originalToFakeChecksum[key]; ok {
-			checkReq.Assets[i].Checksum = fake
-		}
 	}
-	mapLock.RUnlock()
-	if bodyBytes, err = json.Marshal(checkReq); logger.Error(err, "json marshal") {
-		return err
+
+	return originalAssets, mappedAssets
+}
+
+func normalizeChecksum(checksum string) string {
+	if raw, err := hex.DecodeString(checksum); err == nil && len(raw) == sha1.Size {
+		return base64.StdEncoding.EncodeToString(raw)
 	}
-	var req *http.Request
-	if req, err = http.NewRequest(r.Method, upstreamURL+r.URL.String(), bytes.NewReader(bodyBytes)); logger.Error(err, "new request") {
-		return err
+	return checksum
+}
+
+func doBulkUploadCheckRequest(r *http.Request, bodyBytes []byte) (uploadHTTPResult, error) {
+	req, err := http.NewRequest(r.Method, upstreamURL+r.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return uploadHTTPResult{}, err
 	}
-	req.Header = r.Header
-	var resp *http.Response
-	if resp, err = getHTTPclient().Do(req); logger.Error(err, "getHTTPclient.Do") {
-		return err
+	req.Header = r.Header.Clone()
+
+	resp, err := getHTTPclient().Do(req)
+	if err != nil {
+		return uploadHTTPResult{}, err
 	}
 	defer resp.Body.Close()
-	setHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	if _, err = io.Copy(w, resp.Body); logger.Error(err, "resp write") {
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return uploadHTTPResult{}, err
+	}
+
+	return uploadHTTPResult{
+		statusCode: resp.StatusCode,
+		headers:    resp.Header.Clone(),
+		body:       body,
+	}, nil
+}
+
+func writeRawBulkUploadCheckResponse(w http.ResponseWriter, result uploadHTTPResult) error {
+	return writeBulkUploadCheckBody(w, result.headers, result.statusCode, result.body, nil)
+}
+
+func writeBulkUploadCheckBody(w http.ResponseWriter, headers http.Header, statusCode int, body []byte, logger *customLogger) error {
+	setHeaders(w.Header(), headers)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(statusCode)
+	if len(body) == 0 {
+		return nil
+	}
+	if _, err := io.Copy(w, bytes.NewReader(body)); err != nil {
+		if logger != nil {
+			logger.Error(err, "resp write")
+		}
 		return err
 	}
 	return nil
