@@ -50,14 +50,14 @@ RUN git clone -b v${LIBJXL_VERSION} https://github.com/libjxl/libjxl.git --depth
         -DJPEGXL_ENABLE_EXAMPLES=OFF \
         -DCMAKE_C_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" \
         -DCMAKE_CXX_FLAGS_RELEASE="${LIBJXL_CPU_FLAGS}" && \
-    cmake --build libjxl/build --config Release --parallel && \
+    cmake --build libjxl/build --config Release --parallel 2 && \
     cmake --install libjxl/build && \
     ldconfig /usr/local/lib
 
 # Build libavif (TODO: don't build from sources as soon as a new release includes the orientation fix: https://github.com/AOMediaCodec/libavif/issues/2727)
 RUN git clone -b v${LIBAVIF_VERSION} --depth 1 https://github.com/AOMediaCodec/libavif.git && \
     cmake -S libavif -B libavif/build -DAVIF_CODEC_AOM=SYSTEM -DAVIF_BUILD_APPS=ON && \
-    cmake --build libavif/build --config Release --parallel && \
+    cmake --build libavif/build --config Release --parallel 2 && \
     cmake --install libavif/build && \
     ldconfig /usr/local/lib && \
     cd / && rm -fr libavif
@@ -66,7 +66,7 @@ RUN git clone -b v${LIBAVIF_VERSION} --depth 1 https://github.com/AOMediaCodec/l
 RUN git clone -b v${LIBHEIF_VERSION} --depth 1 https://github.com/strukturag/libheif.git && \
     cd libheif/ && mkdir build && cd build && \
     cmake --preset=release .. && \
-    make -j"$(nproc)" && make install && \
+    make -j2 && make install && \
     ldconfig /usr/local/lib && \
     cd / && rm -fr libheif
 
@@ -74,7 +74,7 @@ RUN git clone -b v${LIBHEIF_VERSION} --depth 1 https://github.com/strukturag/lib
 RUN git clone -b ${IMAGE_MAGICK_VERSION} --depth 1 https://github.com/ImageMagick/ImageMagick.git && \
     cd ImageMagick && \
     LIBS="-lsharpyuv" ./configure --without-magick-plus-plus --disable-docs --disable-static --with-tiff --with-jxl --with-heic --with-tcmalloc && \
-    make -j"$(nproc)" && make install && \
+    make -j2 && make install && \
     ldconfig /usr/local/lib && \
     cd / && rm -fr ImageMagick
 
