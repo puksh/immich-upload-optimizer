@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"net/http"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 // WebSocket42 A message starting with the number 42 and then a JSON array. The 1st element is the action/event e.g. on_upload_success, on_asset_delete. Other elements vary depending on the action
@@ -45,6 +46,50 @@ func (wsMsg WebSocket42) getUploadReadyAsset() Asset {
 	return nil
 }
 
+func (wsMsg WebSocket42) getAsset() Asset {
+	if len(wsMsg) < 2 {
+		return nil
+	}
+
+	switch wsMsg.getAction() {
+	case "on_upload_success":
+		if v, ok := wsMsg[1].(map[string]any); ok {
+			return v
+		}
+	case "AssetUploadReadyV1", "AssetUploadReadyV2", "AssetEditReadyV2":
+		return wsMsg.getUploadReadyAsset()
+	}
+
+	return nil
+}
+
+func rewriteWebSocketMessage(message []byte) ([]byte, bool, error) {
+	if len(message) <= 2 || !bytes.Equal(message[:2], []byte("42")) {
+		return message, false, nil
+	}
+
+	var wsMsg WebSocket42
+	if err := json.Unmarshal(message[2:], &wsMsg); err != nil {
+		return message, false, err
+	}
+
+	asset := wsMsg.getAsset()
+	if asset == nil {
+		return message, false, nil
+	}
+
+	mapLock.RLock()
+	asset.toOriginalAsset()
+	mapLock.RUnlock()
+
+	rewritten, err := json.Marshal(wsMsg)
+	if err != nil {
+		return message, false, err
+	}
+
+	return append([]byte("42"), rewritten...), true, nil
+}
+
 func handleWebSocketConn(cliConn, srvConn *websocket.Conn, logger *customLogger) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -59,26 +104,9 @@ func handleWebSocketConn(cliConn, srvConn *websocket.Conn, logger *customLogger)
 				break
 			}
 			//fmt.Printf("SRV: Type: %d Message: %s\n", msgType, message)
-			if msgType == websocket.TextMessage && len(message) > 2 && bytes.Equal(message[:2], []byte("42")) {
-				var wsMsg WebSocket42
-				if err = json.Unmarshal(message[2:], &wsMsg); logger.Error(err, "json unmarshal") {
+			if msgType == websocket.TextMessage {
+				if message, _, err = rewriteWebSocketMessage(message); logger.Error(err, "json rewrite") {
 					continue
-				}
-				var asset Asset
-				switch wsMsg.getAction() {
-				case "on_upload_success":
-					asset = wsMsg.getUploadSuccessAsset()
-				case "AssetUploadReadyV1":
-					asset = wsMsg.getUploadReadyAsset()
-				}
-				if asset != nil {
-					mapLock.RLock()
-					asset.toOriginalAsset()
-					mapLock.RUnlock()
-					if message, err = json.Marshal(wsMsg); logger.Error(err, "json encode") {
-						continue
-					}
-					message = append([]byte("42"), message...)
 				}
 			}
 			if err = cliConn.WriteMessage(msgType, message); err != nil {
