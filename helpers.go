@@ -29,25 +29,9 @@ func isAssetsUpload(r *http.Request) bool {
 	return r.Method == "POST" && r.URL.Path == "/api/assets" && strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
 }
 
-func isStreamSync(r *http.Request) bool {
-	return r.Method == "POST" && r.URL.Path == "/api/sync/stream"
-}
-
-func isFullSync(r *http.Request) bool {
-	return r.Method == "POST" && r.URL.Path == "/api/sync/full-sync"
-}
-
-func isDeltaSync(r *http.Request) bool {
-	return r.Method == "POST" && r.URL.Path == "/api/sync/delta-sync"
-}
-
 func isAlbum(r *http.Request) bool {
 	re := regexp.MustCompile(`^/api/albums/[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}$`)
 	return r.Method == "GET" && re.MatchString(r.URL.Path)
-}
-
-func isBucket(r *http.Request) bool {
-	return r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/timeline/bucket")
 }
 
 func isAssetView(r *http.Request) bool {
