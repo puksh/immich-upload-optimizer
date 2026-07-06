@@ -37,6 +37,15 @@ var fakeToOriginalChecksum map[string]string
 var originalToFakeChecksum map[string]string
 var checksumFileLock sync.Mutex
 
+var syncStreamAssetTypes = map[string]struct{}{
+	"AssetV2":               {},
+	"PartnerAssetV2":        {},
+	"PartnerAssetBackfillV2": {},
+	"AlbumAssetCreateV2":    {},
+	"AlbumAssetUpdateV2":    {},
+	"AlbumAssetBackfillV2":   {},
+}
+
 const defaultChecksumFilePerm os.FileMode = 0644
 
 func isValidSHA1Base64(s string) bool {
@@ -256,6 +265,115 @@ func (asset Asset) toOriginalAsset() {
 			}
 		}
 	}
+}
+
+func rewriteSyncStreamBody(body []byte) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	lines := bytes.Split(body, []byte("\n"))
+	rewritten := make([]byte, 0, len(body))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+
+		newLine, err := rewriteSyncStreamLine(line)
+		if err != nil {
+			return nil, err
+		}
+		rewritten = append(rewritten, newLine...)
+		rewritten = append(rewritten, '\n')
+	}
+
+	return rewritten, nil
+}
+
+func rewriteSyncStreamLine(line []byte) ([]byte, error) {
+	var item map[string]any
+	if err := json.Unmarshal(line, &item); err != nil {
+		return nil, err
+	}
+
+	if t, ok := item["type"].(string); ok {
+		if _, shouldRewrite := syncStreamAssetTypes[t]; shouldRewrite {
+			if data, ok := item["data"].(map[string]any); ok {
+				mapLock.RLock()
+				Asset(data).toOriginalAsset()
+				mapLock.RUnlock()
+			}
+		}
+	}
+
+	return json.Marshal(item)
+}
+
+func doSyncStreamRequest(r *http.Request, bodyBytes []byte) (uploadHTTPResult, error) {
+	req, err := http.NewRequest(r.Method, upstreamURL+r.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return uploadHTTPResult{}, err
+	}
+	req.Header = r.Header.Clone()
+
+	resp, err := getHTTPclient().Do(req)
+	if err != nil {
+		return uploadHTTPResult{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return uploadHTTPResult{}, err
+	}
+
+	return uploadHTTPResult{
+		statusCode: resp.StatusCode,
+		headers:    resp.Header.Clone(),
+		body:       body,
+	}, nil
+}
+
+func replaceSyncStream(w http.ResponseWriter, r *http.Request, logger *customLogger) error {
+	logger.SetErrPrefix("sync-stream")
+	var err error
+	var bodyBytes []byte
+	if bodyBytes, err = io.ReadAll(r.Body); logger.Error(err, "read body") {
+		return err
+	}
+
+	result, err := doSyncStreamRequest(r, bodyBytes)
+	if logger.Error(err, "upstream request") {
+		return err
+	}
+	if result.statusCode != http.StatusOK {
+		return writeSyncStreamBody(w, result.headers, result.statusCode, result.body, nil)
+	}
+
+	if bodyBytes, err = rewriteSyncStreamBody(result.body); logger.Error(err, "rewrite body") {
+		return err
+	}
+
+	return writeSyncStreamBody(w, result.headers, result.statusCode, bodyBytes, logger)
+}
+
+func writeSyncStreamBody(w http.ResponseWriter, headers http.Header, statusCode int, body []byte, logger *customLogger) error {
+	setHeaders(w.Header(), headers)
+	if !slices.Contains([]string{"gzip", "br"}, headers.Get("Content-Encoding")) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	}
+	w.WriteHeader(statusCode)
+	if len(body) == 0 {
+		return nil
+	}
+	if _, err := io.Copy(w, bytes.NewReader(body)); err != nil {
+		if logger != nil {
+			logger.Error(err, "resp write")
+		}
+		return err
+	}
+	return nil
 }
 
 type bulkUploadCheckItem struct {

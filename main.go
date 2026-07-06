@@ -177,6 +177,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		logger.SetErrPrefix("job err")
 		logger.Error(err, "")
 		return
+	case isSyncStream(r):
+		if err = replaceSyncStream(w, r, logger); err == nil {
+			return
+		}
 	case isBulkUploadCheck(r):
 		if err = replaceBulkUploadCheck(w, r, logger); err == nil {
 			return
