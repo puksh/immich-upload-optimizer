@@ -75,6 +75,60 @@ func setChecksumPair(fake, original string) bool {
 	return true
 }
 
+func removeChecksumPair(fake, original string) bool {
+	if existingOriginal, ok := fakeToOriginalChecksum[fake]; !ok || existingOriginal != original {
+		return false
+	}
+	if existingFake, ok := originalToFakeChecksum[original]; !ok || existingFake != fake {
+		return false
+	}
+	delete(fakeToOriginalChecksum, fake)
+	delete(originalToFakeChecksum, original)
+	return true
+}
+
+type stagedChecksumPair struct {
+	fake           string
+	original       string
+	alreadyPresent bool
+	persisted      bool
+}
+
+func stageChecksumPair(fake, original string) *stagedChecksumPair {
+	if !isValidSHA1Base64(fake) || !isValidSHA1Base64(original) {
+		return nil
+	}
+	mapLock.Lock()
+	defer mapLock.Unlock()
+	if existingOriginal, ok := fakeToOriginalChecksum[fake]; ok && existingOriginal == original {
+		if existingFake, ok := originalToFakeChecksum[original]; ok && existingFake == fake {
+			return &stagedChecksumPair{fake: fake, original: original, alreadyPresent: true, persisted: true}
+		}
+	}
+	setChecksumPair(fake, original)
+	return &stagedChecksumPair{fake: fake, original: original}
+}
+
+func (pair *stagedChecksumPair) Persist() error {
+	if pair == nil || pair.persisted {
+		return nil
+	}
+	if err := appendToCSV(pair.fake, pair.original); err != nil {
+		return err
+	}
+	pair.persisted = true
+	return nil
+}
+
+func (pair *stagedChecksumPair) Rollback() {
+	if pair == nil || pair.persisted || pair.alreadyPresent {
+		return
+	}
+	mapLock.Lock()
+	removeChecksumPair(pair.fake, pair.original)
+	mapLock.Unlock()
+}
+
 func initChecksums() {
 	checksumFileLock.Lock()
 	defer checksumFileLock.Unlock()

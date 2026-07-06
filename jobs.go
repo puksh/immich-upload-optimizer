@@ -149,6 +149,7 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	uploadFile := formFile
 	uploadFilename := formFileHeader.Filename
 	uploadOriginal := true
+	var stagedPair *stagedChecksumPair
 
 	taskProcessor, err := NewTaskProcessorFromMultipart(formFile, formFileHeader)
 	if err == nil && taskProcessor != nil {
@@ -181,6 +182,12 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 			_ = taskProcessor.CleanOriginalFile() // Save RAM before upload (tmpfs)
 		}
 	}
+	if !uploadOriginal {
+		if newHash, err = SHA1(taskProcessor.ProcessedFile); err != nil {
+			return fmt.Errorf("new sha1: %w", err)
+		}
+		stagedPair = stageChecksumPair(newHash, originalHash)
+	}
 	// Upload the original file or processed one if a task was found
 	result := uploadUpstream(r, uploadFile, uploadFilename)
 	currentJob.result = result
@@ -188,21 +195,22 @@ func newJob(r *http.Request, w http.ResponseWriter, logger *customLogger) (err e
 	finalized = true
 
 	if err = writeHTTPResult(w, result); err != nil {
+		stagedPair.Rollback()
 		return fmt.Errorf("failed to write upstream response: %w", err)
 	}
 	responseWritten = true
 
 	if result.err != nil {
+		stagedPair.Rollback()
 		jobLogger.Printf("upload upstream error: %s", result.err.Error())
 		return result.err
 	}
 	if uploadOriginal {
 		jobLogger.Printf("uploaded original: \"%s\" (%s)", formFileHeader.Filename, humanReadableSize(formFileHeader.Size))
 	} else {
-		if newHash, err = SHA1(taskProcessor.ProcessedFile); err != nil {
-			return fmt.Errorf("new sha1: %w", err)
+		if err = stagedPair.Persist(); err != nil {
+			return fmt.Errorf("persist checksums: %w", err)
 		}
-		addChecksums(newHash, originalHash)
 		jobLogger.Printf("uploaded: \"%s\" (%s) <- (%s) \"%s\"", taskProcessor.ProcessedFilename, humanReadableSize(taskProcessor.ProcessedSize), humanReadableSize(taskProcessor.OriginalSize), taskProcessor.OriginalFilename)
 	}
 
